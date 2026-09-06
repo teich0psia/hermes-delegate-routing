@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.1 — 2026-09-07
+
+### Fixed
+
+- Async delegation completion notices now report the actual per-task child model
+  from `results[].model` instead of the stale batch/default `delegation.model`.
+  Homogeneous batches show the real model directly; heterogeneous fan-out shows
+  `Model: per-task` plus a compact task-to-model mapping.
+- The display correction is plugin-only and reuses Hermes' native async formatter;
+  if that formatter is unavailable on a future host, routing remains active and
+  only the display fix degrades with a warning.
+- Added an end-to-end main-profile chat verification where the parent model emitted
+  a `delegate_task` call for `deepseek-v4-flash`/`deepseek`/`low`, the child actually
+  called DeepSeek, and the async completion re-entered the parent chat showing
+  `Model: deepseek-v4-flash`.
+
 ## 0.2.0 — 2026-09-07
 
 ### Added

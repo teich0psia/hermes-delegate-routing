@@ -17,9 +17,9 @@ to a different model/provider/reasoning effort via per-task fields:
 Design and rationale live in docs/DESIGN.md. In short: `delegate_task` is
 special-cased in the host runtime to bypass the tool registry, so the sanctioned
 `register_tool(override=True)` path cannot intercept it. This plugin instead
-applies three narrow, idempotent monkeypatches to `tools.delegate_tool` at load
-time (schema advertise → capture per-task routing → apply per child). See
-docs/DESIGN.md §6 and §6.1.
+applies four narrow, idempotent runtime monkeypatches at load time (schema
+advertise → capture per-task routing → apply per child → correct async completion
+model display). See docs/DESIGN.md §6 and §6.1.
 
 Only per-task `tasks[i].model`/`.provider`/`.reasoning_effort` is supported
 (top-level routing fields are dropped by the host before they reach the tool).
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 def register(ctx=None) -> None:
     """Plugin entry point — called once at startup by the Hermes plugin loader.
 
-    Installs the three monkeypatch seams on ``tools.delegate_tool`` (schema,
-    capture, apply). Safe to call without a live ``ctx``. Never raises: if the
+    Installs the four monkeypatch seams (schema, capture, apply, async display).
+    Safe to call without a live ``ctx``. Never raises: if the
     host is missing or its signatures don't match, the plugin degrades to a
     no-op and logs a warning (see ``patches.apply_patches``).
     """

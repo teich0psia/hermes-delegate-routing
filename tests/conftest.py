@@ -144,6 +144,16 @@ def _restore_host_delegate_state():
     except Exception:
         entry = None
 
+    process_registry = None
+    saved_async_formatter = None
+    try:
+        import importlib
+
+        process_registry = importlib.import_module("tools.process_registry")
+        saved_async_formatter = getattr(process_registry, "_format_async_delegation", None)
+    except Exception:
+        process_registry = None
+
     try:
         yield
     finally:
@@ -155,3 +165,5 @@ def _restore_host_delegate_state():
             del dt._HDR_PATCHED
         if entry is not None:
             entry.dynamic_schema_overrides = saved_schema
+        if process_registry is not None and saved_async_formatter is not None:
+            vars(process_registry)["_format_async_delegation"] = saved_async_formatter

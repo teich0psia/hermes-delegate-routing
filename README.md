@@ -74,7 +74,7 @@ effect. This matches the recommended call shape (see [`docs/DESIGN.md`](docs/DES
 `delegate_task` is special-cased in the host runtime
 (`agent/agent_runtime_helpers.py`) to bypass the tool registry, so the sanctioned
 `register_tool(override=True)` mechanism can't intercept it. Instead the plugin
-installs three narrow, idempotent monkeypatches on `tools.delegate_tool` at load:
+installs four narrow, idempotent runtime monkeypatches at load:
 
 1. **schema** — advertise `tasks[].model` / `tasks[].provider` /
    `tasks[].reasoning_effort` to the model (via the registered `ToolEntry`);
@@ -84,7 +84,11 @@ installs three narrow, idempotent monkeypatches on `tools.delegate_tool` at load
 3. **apply** — wrap `_build_child_agent` to inject task routing per child. Hermes
    builds the child normally first, then an explicit task reasoning effort replaces
    the child's `reasoning_config`, so provider-specific request translation remains
-   entirely in Hermes.
+   entirely in Hermes;
+4. **async display** — wrap Hermes' async completion formatter so the parent sees
+   the actual `results[].model` used by each child instead of the stale batch-level
+   `delegation.model`. Mixed-model fan-out is labeled `Model: per-task` with a compact
+   task-to-model mapping.
 
 If the host isn't importable or its function signatures don't match,
 `apply_patches()` **refuses to patch** and the plugin degrades to a no-op — core
@@ -96,9 +100,9 @@ Verified against upstream [`NousResearch/hermes-agent`](https://github.com/NousR
 
 | hermes-agent | Status |
 |---|---|
-| `0.21.0` (checkout `63279301`, tested 2026-09-07) | ✅ verified — current schema/signatures plus deterministic request-boundary model/provider/reasoning E2E |
-| `0.19.0` (tag [`v2026.7.20`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20)) | ✅ verified — original E2E coverage plus 0.2.0 signature/schema/reasoning compatibility check |
-| `0.18.0` (tag `v2026.7.1`) | ✅ verified — 0.2.0 signature/schema/reasoning compatibility; host supports efforts through `xhigh` |
+| `0.21.0` (checkout `63279301`, tested 2026-09-07) | ✅ verified — current schema/signatures, request-boundary routing, main-profile natural-language delegation, and async actual-model display E2E |
+| `0.19.0` (tag [`v2026.7.20`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20)) | ✅ verified — routing/signature/schema/reasoning compatibility; async display fix degrades safely if host formatter differs |
+| `0.18.0` (tag `v2026.7.1`) | ✅ verified — routing/signature/schema/reasoning compatibility; host supports efforts through `xhigh` |
 
 Because the plugin depends on host internals, new hermes-agent releases can
 drift. The signature guard turns drift into a **safe no-op with a loud log**, not

@@ -40,6 +40,39 @@ def test_apply_patches_against_real_host():
     assert dt.delegate_task is wrapped, "second apply must not re-wrap"
 
 
+def test_async_display_against_real_host():
+    process_registry_mod = pytest.importorskip(
+        "tools.process_registry", reason="no hermes-agent process registry on path"
+    )
+    from hermes_delegate_routing.patches import apply_patches
+
+    orig_formatter = process_registry_mod._format_async_delegation
+    assert apply_patches() is True
+    assert process_registry_mod._format_async_delegation is not orig_formatter
+
+    rendered = process_registry_mod._format_async_delegation(
+        {
+            "delegation_id": "smoke",
+            "is_batch": True,
+            "role": "leaf",
+            "model": "stale-batch-model",
+            "results": [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "OK",
+                    "model": "actual-child-model",
+                    "duration_seconds": 0.1,
+                }
+            ],
+            "goals": ["smoke"],
+            "total_duration_seconds": 0.1,
+        }
+    )
+    assert "Model: actual-child-model" in rendered
+    assert "stale-batch-model" not in rendered
+
+
 def test_resolver_against_real_parse_model_flags():
     """Resolver reads model/provider through the real parse_model_flags (arity may
     differ across host versions); switch_model is mocked so there's no network."""

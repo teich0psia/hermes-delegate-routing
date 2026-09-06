@@ -106,12 +106,12 @@ only place to apply model/provider routing without reimplementing the build loop
 index correlation and then replace `child.reasoning_config` after native child
 construction.
 
-## 6. Design — three seams
+## 6. Design — four seams
 
-All three patch attributes of `tools.delegate_tool` (or its registered
-`ToolEntry`) once, idempotently, in `register(ctx)`. Because the host resolves
-`delegate_task` and `_build_child_agent` as module globals at call time, rebinding
-the module attributes reaches every call path.
+The plugin installs four narrow runtime patches once, idempotently, in
+`register(ctx)`. Seams A–C handle routing; seam D is display-only. Because the host
+resolves `delegate_task`, `_build_child_agent`, and the async formatter as module
+globals at call time, rebinding those attributes reaches the active call paths.
 
 - **A — schema.** Wrap the tool's `dynamic_schema_overrides` builder to advertise
   `tasks[].model`, `tasks[].provider`, and `tasks[].reasoning_effort` to the model.
@@ -130,6 +130,14 @@ the module attributes reaches every call path.
   Hermes constructs the child normally, apply an explicit task `reasoning_effort`
   to `child.reasoning_config`. Tasks with no override pass through unchanged. This
   keeps provider-specific reasoning translation in Hermes' normal transports.
+- **D — async display.** Wrap `tools.process_registry._format_async_delegation`.
+  Hermes' async batch event keeps the batch/default model captured before seam C,
+  but each completed result contains the actual child `model`. The wrapper shallow-
+  copies only the display event, replaces the header model from `results[].model`,
+  and delegates formatting back to Hermes. Mixed-model fan-out uses
+  `Model: per-task` plus a compact task-to-model mapping. If this formatter is not
+  present on a host version, routing still activates and only the display fix is
+  skipped with a warning.
 
 **Precedence (per field):** `tasks[i].model/provider/reasoning_effort` → matching
 `delegation.*` config → parent agent. A model-only task pins the inherited
@@ -145,11 +153,11 @@ which swaps the `ToolEntry.handler`. But `delegate_task` is **special-cased in t
 agent runtime** (`agent/agent_runtime_helpers.py`, `agent/tool_executor.py`) to run
 via `run_agent._dispatch_delegate_task`, which imports and calls
 `tools.delegate_tool.delegate_task` **directly** — bypassing the registry. So an
-`override=True` handler would never run for this tool. The runtime seams (B/C) can
-therefore only be installed by module-attribute monkeypatch (which the direct
-import picks up) — the schema seam (A) still flows through the registry, but is kept
-in the same mechanism for cohesion and to avoid needing an `allow_tool_override`
-grant.
+`override=True` handler would never run for this tool. The routing runtime seams
+(B/C) can therefore only be installed by module-attribute monkeypatch (which the
+direct import picks up) — the schema seam (A) still flows through the registry.
+Seam D is similarly a module-attribute wrapper on the async formatter. None of
+these require an `allow_tool_override` grant.
 
 A future upstream change that routed `delegate_task` through the registry, or that
 landed the `runtime_override` primitive (PR #23898), would let this plugin drop the
@@ -162,7 +170,7 @@ monkeypatch.
 | Registry `override=True` only | Misses `_dispatch_delegate_task` (direct import); still couldn't vary per child without patching `_build_child_agent`. |
 | `pre_tool_call` hook mutates args | Veto-only by contract; and top-level fields are whitelisted out downstream. |
 | Middleware rewrite into `tasks[i]` | Fields survive but the loop ignores them — still needs seam C. |
-| Reimplement `delegate_task` (vendor the loop) | ~300 lines tracking many internals; higher churn than three narrow seams. |
+| Reimplement `delegate_task` (vendor the loop) | ~300 lines tracking many internals; higher churn than four narrow seams. |
 | Fork + core patch | The thing we're avoiding. |
 
 ## 8. Packaging
@@ -191,7 +199,8 @@ monkeypatch.
 
 The core cost of this approach is dependence on host internals
 (`delegate_task`, `_build_child_agent`, `_build_dynamic_schema_overrides`,
-`parse_model_flags`, `parse_reasoning_effort`, `_strip_model_hidden_task_fields`). Mitigations:
+`tools.process_registry._format_async_delegation`, `parse_model_flags`,
+`parse_reasoning_effort`, `_strip_model_hidden_task_fields`). Mitigations:
 
 - **Signature guard** at patch time turns host drift into a safe no-op with a loud
   log, not a crash.
@@ -210,6 +219,9 @@ The core cost of this approach is dependence on host internals
   resolution; registry registration; per-subagent result `model`.
 - `run_agent.py` — `_dispatch_delegate_task` (whitelists args; direct import,
   bypasses registry).
+- `tools/process_registry.py` — `_format_async_delegation` renders the async
+  completion header from batch-level `evt.model`, while each batch result carries
+  the actual child `model` used after per-task routing.
 - `agent/agent_runtime_helpers.py`, `agent/tool_executor.py` — `delegate_task`
   special-case dispatch.
 - `tools/registry.py` — `register(override=True)` + plugin override policy;

@@ -1,11 +1,11 @@
 """The monkeypatch seams.
 
-Three narrow wrappers over ``tools.delegate_tool`` module attributes (see
-docs/DESIGN.md §6):
+Four narrow wrappers over Hermes runtime seams (see docs/DESIGN.md §6):
 
   A. schema  — advertise per-task model/provider/reasoning fields to the LLM
   B. capture — resolve per-task routing state and stash it by task_index
   C. apply   — inject stashed routing into each ``_build_child_agent`` call
+  D. display — make async completion metadata report the actual child model(s)
 
 This module defines the wrapper *factories*; the orchestration that imports the
 host, validates signatures, and installs them lives in ``apply_patches()``.
@@ -250,6 +250,60 @@ def make_build_child_wrapper(orig_build_child):
     return _wrapped
 
 
+# --- Seam D: async completion display --------------------------------------
+
+def make_async_formatter_wrapper(orig_formatter):
+    """Report actual child model(s) in async delegation completion metadata.
+
+    Hermes' background batch event carries a batch-level ``model`` captured
+    before per-task routing is applied, while each structured result carries the
+    actual child model. Reuse the host formatter and only correct that display
+    metadata. For heterogeneous batches, mark the header as per-task and append
+    a compact task-to-model mapping rather than copying the host formatter.
+    """
+
+    def _wrapped(evt):
+        if not isinstance(evt, dict):
+            return orig_formatter(evt)
+
+        display_evt = evt
+        task_models = []
+        results = evt.get("results")
+        if isinstance(results, list):
+            for r in sorted(
+                (r for r in results if isinstance(r, dict)),
+                key=lambda item: item.get("task_index", 0),
+            ):
+                model = r.get("model")
+                if isinstance(model, str) and model.strip():
+                    task_models.append((r.get("task_index", 0), model.strip()))
+
+        if task_models:
+            unique_models = list(dict.fromkeys(model for _, model in task_models))
+            display_evt = dict(evt)
+            display_evt["model"] = unique_models[0] if len(unique_models) == 1 else "per-task"
+            rendered = orig_formatter(display_evt)
+            if len(unique_models) > 1 and isinstance(rendered, str):
+                mapping = ", ".join(
+                    f"{index + 1}={model}" for index, model in task_models
+                )
+                lines = rendered.splitlines()
+                insert_at = next(
+                    (i + 1 for i, line in enumerate(lines) if line.startswith("Role: ")),
+                    None,
+                )
+                if insert_at is None:
+                    lines.append(f"Task models: {mapping}")
+                else:
+                    lines.insert(insert_at, f"Task models: {mapping}")
+                return "\n".join(lines)
+            return rendered
+
+        return orig_formatter(display_evt)
+
+    return _wrapped
+
+
 # --- Orchestration ----------------------------------------------------------
 
 def _params(fn) -> set:
@@ -332,8 +386,38 @@ def _patch_schema(dt) -> None:
     _invalidate_tool_defs_cache(registry)
 
 
+def _patch_async_formatter() -> bool:
+    """Seam D — correct stale batch-level model metadata in async notices."""
+    try:
+        import importlib
+
+        process_registry = importlib.import_module("tools.process_registry")
+    except Exception as exc:
+        logger.warning(
+            "delegate-routing: async completion formatter unavailable; "
+            "routing remains active but completion notices may show the batch model: %s",
+            exc,
+        )
+        return False
+
+    current = getattr(process_registry, "_format_async_delegation", None)
+    if not callable(current):
+        logger.warning(
+            "delegate-routing: tools.process_registry._format_async_delegation "
+            "unavailable; async completion model display not patched"
+        )
+        return False
+    if getattr(current, "_hdr_delegate_routing_display", False):
+        return True
+
+    wrapped = make_async_formatter_wrapper(current)
+    wrapped.__dict__["_hdr_delegate_routing_display"] = True
+    vars(process_registry)["_format_async_delegation"] = wrapped
+    return True
+
+
 def apply_patches() -> bool:
-    """Install the three seams on the host, once. Returns True if active.
+    """Install the four seams on the host, once. Returns True if routing is active.
 
     Refuses to patch (returns False, no changes) if the host isn't importable or
     its function signatures don't match expectations — the plugin degrades to a
@@ -389,10 +473,15 @@ def apply_patches() -> bool:
         # Seam A (schema) via the ToolEntry.
         _patch_schema(dt)
 
+        # Seam D is display-only. If a host moves/removes the formatter, routing
+        # still remains valid; we log the degraded display behavior explicitly.
+        display_patched = _patch_async_formatter()
+
         dt._HDR_PATCHED = True
         logger.info(
             "delegate-routing: active — patched delegate_task, _build_child_agent, "
-            "and delegate schema for model/provider/reasoning routing (on_error=%s)",
-            on_error,
+            "delegate schema, and async model display=%s for model/provider/reasoning "
+            "routing (on_error=%s)",
+            display_patched, on_error,
         )
         return True

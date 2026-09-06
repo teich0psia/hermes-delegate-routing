@@ -1,8 +1,8 @@
 """Tests for apply_patches orchestration.
 
-Injects a fake ``tools.delegate_tool`` and ``tools.registry`` into sys.modules so
-apply_patches() can run without a real host. Covers: patches applied once,
-idempotency, schema wired via the ToolEntry, and signature-mismatch degradation.
+Injects fake delegate/registry/process-registry modules into sys.modules so
+apply_patches() can run without a real host. Covers all four seams, idempotency,
+schema wiring via the ToolEntry, and signature-mismatch degradation.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _host_schema():
 
 
 def _make_fake_host(*, bc_full=True):
-    """Build fake tools.delegate_tool + tools.registry modules."""
+    """Build fake tools.delegate_tool + registry/process_registry modules."""
 
     def delegate_task(goal=None, context=None, tasks=None, max_iterations=None,
                       role=None, background=None, parent_agent=None):
@@ -81,35 +81,45 @@ def _make_fake_host(*, bc_full=True):
     reg_mod = types.ModuleType("tools.registry")
     reg_mod.registry = _Registry(entry)
 
+    process_mod = types.ModuleType("tools.process_registry")
+
+    def _format_async_delegation(evt):
+        return f"Role: leaf   Model: {evt.get('model', '?')}"
+
+    vars(process_mod)["_format_async_delegation"] = _format_async_delegation
+
     tools_pkg = types.ModuleType("tools")
     tools_pkg.__path__ = []
 
-    return tools_pkg, dt, reg_mod, entry
+    return tools_pkg, dt, reg_mod, process_mod, entry
 
 
 @pytest.fixture
 def fake_host(monkeypatch):
     def _install(*, bc_full=True):
-        tools_pkg, dt, reg_mod, entry = _make_fake_host(bc_full=bc_full)
+        tools_pkg, dt, reg_mod, process_mod, entry = _make_fake_host(bc_full=bc_full)
         monkeypatch.setitem(sys.modules, "tools", tools_pkg)
         monkeypatch.setitem(sys.modules, "tools.delegate_tool", dt)
         monkeypatch.setitem(sys.modules, "tools.registry", reg_mod)
-        return dt, entry
+        monkeypatch.setitem(sys.modules, "tools.process_registry", process_mod)
+        return dt, entry, process_mod
 
     return _install
 
 
-def test_applies_all_three_seams(fake_host):
+def test_applies_all_four_seams(fake_host):
     from hermes_delegate_routing.patches import apply_patches
 
-    dt, entry = fake_host()
+    dt, entry, process_mod = fake_host()
     orig_delegate = dt.delegate_task
     orig_build = dt._build_child_agent
+    orig_formatter = process_mod._format_async_delegation
 
     assert apply_patches() is True
     assert dt._HDR_PATCHED is True
     assert dt.delegate_task is not orig_delegate       # Seam B wrapped
     assert dt._build_child_agent is not orig_build      # Seam C wrapped
+    assert process_mod._format_async_delegation is not orig_formatter  # Seam D wrapped
 
     # Seam A: the ToolEntry builder now advertises model/provider.
     schema = entry.dynamic_schema_overrides()
@@ -120,17 +130,29 @@ def test_applies_all_three_seams(fake_host):
 def test_idempotent(fake_host):
     from hermes_delegate_routing.patches import apply_patches
 
-    dt, _ = fake_host()
+    dt, _, _ = fake_host()
     assert apply_patches() is True
     wrapped_once = dt.delegate_task
     assert apply_patches() is True          # second call no-ops
     assert dt.delegate_task is wrapped_once  # not re-wrapped
 
 
+def test_missing_async_formatter_degrades_display_only(fake_host, monkeypatch):
+    from hermes_delegate_routing.patches import apply_patches
+
+    dt, _, _ = fake_host()
+    orig_delegate = dt.delegate_task
+    monkeypatch.setitem(sys.modules, "tools.process_registry", None)
+
+    assert apply_patches() is True
+    assert dt.delegate_task is not orig_delegate
+    assert dt._HDR_PATCHED is True
+
+
 def test_signature_mismatch_degrades(fake_host):
     from hermes_delegate_routing.patches import apply_patches
 
-    dt, _ = fake_host(bc_full=False)
+    dt, _, _ = fake_host(bc_full=False)
     orig_delegate = dt.delegate_task
 
     assert apply_patches() is False          # refused
@@ -154,7 +176,7 @@ def test_end_to_end_routing_through_patched_host(fake_host):
 
     from hermes_delegate_routing.patches import apply_patches
 
-    dt, _ = fake_host()
+    dt, _, _ = fake_host()
 
     # Replace the host's build loop: make orig delegate_task call the (patched)
     # module-global _build_child_agent, as the real host does.
