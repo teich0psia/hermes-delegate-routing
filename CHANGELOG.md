@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2 — 2026-09-07
+
+### Fixed
+
+- Project metadata now points Homepage/Repository/Issues/Changelog at the maintained
+  `teich0psia/hermes-delegate-routing` fork instead of the upstream `b3nw` fork.
+- Explicit per-task `reasoning_effort` now fails closed if a future Hermes child
+  object no longer exposes `reasoning_config`. The plugin logs a warning and raises
+  `ValueError` rather than silently attaching a dead attribute and pretending the
+  override took effect.
+
 ## 0.2.1 — 2026-09-07
 
 ### Fixed

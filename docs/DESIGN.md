@@ -191,6 +191,10 @@ monkeypatch.
 - **Host missing / signature mismatch:** `apply_patches()` validates the target
   signatures and **refuses to patch** on any mismatch, logging a loud warning. The
   plugin degrades to a no-op; core behavior is untouched (never half-patched).
+- **Child reasoning attribute drift:** if an explicit task reasoning override was
+  resolved but the constructed child no longer exposes `reasoning_config`, seam C
+  logs a warning and raises `ValueError`. This fails closed instead of silently
+  creating an unused ad-hoc attribute and pretending the override succeeded.
 - **Double load:** idempotent via a module sentinel guarded by a lock.
 - **Concurrency:** the `ContextVar` isolates overlapping `delegate_task` calls; the
   synchronous build loop keeps index→creds stable within a call.
@@ -208,8 +212,8 @@ The core cost of this approach is dependence on host internals
   *adding* a parameter; the resolver reads `parse_model_flags` positionally to
   tolerate its return tuple growing.
 - **Pinned, tested host versions** (see `CHANGELOG.md` / README support table).
-- If the host ever ships native per-task routing, the plugin can detect it and
-  no-op.
+- **Future work:** if the host ships native per-task routing, add an explicit
+  capability check and no-op rather than layering these routing seams on top.
 
 ### Evidence index (hermes-agent 0.21.0 checkout `63279301`; original seams also verified on 0.18/0.19)
 

@@ -173,6 +173,42 @@ def test_invalid_reasoning_fallback_preserves_native_reasoning():
     assert children[0].reasoning_config == {"enabled": True, "effort": "medium"}
 
 
+def test_explicit_reasoning_fails_closed_if_child_attribute_disappears(caplog):
+    def build_child(
+        task_index,
+        goal,
+        context,
+        toolsets,
+        model,
+        max_iterations,
+        task_count,
+        parent_agent,
+        override_provider=None,
+        override_base_url=None,
+        override_api_key=None,
+        override_api_mode=None,
+        override_acp_command=None,
+        override_acp_args=None,
+        role="leaf",
+    ):
+        return SimpleNamespace()
+
+    from hermes_delegate_routing._state import ROUTING
+
+    token = ROUTING.set(
+        {0: {"reasoning_config": {"enabled": True, "effort": "low"}}}
+    )
+    try:
+        with pytest.raises(ValueError, match="no reasoning_config attribute"):
+            make_build_child_wrapper(build_child)(
+                0, "goal", None, None, "batch", 10, 1, SimpleNamespace()
+            )
+    finally:
+        ROUTING.reset(token)
+
+    assert "refusing to ignore explicit task reasoning_effort override" in caplog.text
+
+
 def test_build_child_forwards_current_host_provider_personality_fields():
     seen = {}
 

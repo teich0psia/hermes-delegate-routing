@@ -244,6 +244,13 @@ def make_build_child_wrapper(orig_build_child):
         # entirely in Hermes transports. Requests read agent.reasoning_config at
         # call time on supported hosts.
         if creds and "reasoning_config" in creds:
+            if not hasattr(child, "reasoning_config"):
+                msg = (
+                    "delegate-routing: constructed child has no reasoning_config attribute; "
+                    "refusing to ignore explicit task reasoning_effort override"
+                )
+                logger.warning(msg)
+                raise ValueError(msg)
             child.reasoning_config = dict(creds["reasoning_config"])
         return child
 
