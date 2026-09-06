@@ -28,7 +28,12 @@ logger = logging.getLogger(__name__)
 
 # Serializes apply_patches() so a concurrent second caller can't pass the
 # _HDR_PATCHED check before the first sets it (which would double-wrap).
-_PATCH_LOCK = threading.Lock()
+# A re-entrant lock (not a plain Lock): importing a host module below can
+# re-enter the plugin loader on some hosts (model_tools discovers plugins at
+# import), which calls register() → apply_patches() on this same thread. A
+# plain Lock would deadlock there; with an RLock the nested pass proceeds and
+# the sentinel re-check below keeps patching single (see _preimport_host()).
+_PATCH_LOCK = threading.RLock()
 
 # Host function parameters we depend on. If a future hermes-agent drops/renames
 # any of these, apply_patches() refuses to patch rather than half-wrap.
@@ -329,6 +334,32 @@ def _read_on_error() -> str:
         return "fail"
 
 
+def _preimport_host() -> None:
+    """Import every host module the seams touch, before taking _PATCH_LOCK.
+
+    Importing one of these can re-enter the plugin loader on some hosts
+    (model_tools discovers plugins at import time), which calls
+    register() → apply_patches() on this same thread. Doing it up-front
+    means any such re-entry completes its own full pass and sets the
+    sentinel, which the caller re-checks under the lock — instead of
+    deadlocking (or double-wrapping) mid-patch. All pre-imports are
+    best-effort: the seams below keep their own guards and degrade
+    gracefully when a module is genuinely absent.
+    """
+    import importlib
+
+    for _mod in (
+        "tools.registry",
+        "tools.process_registry",
+        "model_tools",
+        "hermes_cli.config",
+    ):
+        try:
+            importlib.import_module(_mod)
+        except Exception:
+            pass
+
+
 def _invalidate_tool_defs_cache(registry) -> None:
     """Force the host to recompute cached tool definitions after Seam A.
 
@@ -438,6 +469,9 @@ def apply_patches() -> bool:
             "plugin inactive: %s", exc,
         )
         return False
+
+    # Import the remaining host modules before locking (see _preimport_host).
+    _preimport_host()
 
     with _PATCH_LOCK:
         if getattr(dt, "_HDR_PATCHED", False):

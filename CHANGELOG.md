@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.3 — 2026-09-07
+
+### Fixed
+
+- Fixed a re-entrant deadlock in `apply_patches()`: importing a host module
+  mid-patch could re-enter the plugin loader (some hosts discover plugins at
+  `model_tools` import time), which calls `register()` → `apply_patches()`
+  on the same thread and deadlocked on the patch lock. Host modules are now
+  pre-imported before locking (a nested pass completes first and sets the
+  sentinel), and the lock is an `RLock` as a backstop. Regression test in
+  `tests/test_reentrancy.py` (fails pre-fix via join timeout, passes post-fix).
+
 ## 0.2.2 — 2026-09-07
 
 ### Fixed

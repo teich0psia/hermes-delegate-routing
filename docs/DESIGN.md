@@ -195,7 +195,9 @@ monkeypatch.
   resolved but the constructed child no longer exposes `reasoning_config`, seam C
   logs a warning and raises `ValueError`. This fails closed instead of silently
   creating an unused ad-hoc attribute and pretending the override succeeded.
-- **Double load:** idempotent via a module sentinel guarded by a lock.
+- **Double load:** idempotent via a module sentinel guarded by a (re-entrant)
+  lock. Host modules are pre-imported before locking so an import-triggered
+  loader re-entry completes its own pass instead of deadlocking mid-patch.
 - **Concurrency:** the `ContextVar` isolates overlapping `delegate_task` calls; the
   synchronous build loop keeps index→creds stable within a call.
 
