@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.0 — 2026-09-07
+
+### Added
+
+- Per-task `reasoning_effort` on `delegate_task(tasks=[...])`, parsed by Hermes'
+  own `parse_reasoning_effort()` and applied to the constructed child agent.
+- Precedence is now explicit per field: `tasks[i].*` → `delegation.*` → parent
+  inheritance. Omitting `reasoning_effort` leaves Hermes' native delegation
+  reasoning resolution untouched.
+- Request-boundary regression coverage proving distinct per-task reasoning
+  efforts reach Hermes' normal provider transport path.
+
+### Changed
+
+- Verified compatibility with the installed Hermes Agent 0.21.0 checkout
+  (`63279301bcbdc185c1b07b98a9312eb0c862f26d`).
+- Per-task model/provider resolution now preserves newer host
+  `request_overrides` and `max_output_tokens` metadata when available, while
+  retaining the previous pass-through behavior on older hosts.
+- Fixed per-field precedence for partial task overrides: model-only tasks now
+  inherit/pin `delegation.provider` before the parent provider, and provider-only
+  tasks inherit `delegation.model` before the parent model instead of falling
+  through to `/model` auto-detection.
+- Host-backed E2E fixtures tolerate the current delegate goal validation and
+  optional reasoning response fields without depending on the operator's
+  configured delegation provider.
+
 ## 0.1.2 — 2026-07-24
 
 ### Fixed

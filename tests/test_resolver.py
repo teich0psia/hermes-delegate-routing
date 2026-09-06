@@ -127,3 +127,138 @@ def test_model_only_same_provider_takes_effect():
         )
     assert creds["model"] == "glm-5"
     assert creds["provider"] == "anthropic"
+    # Provider omitted at task level: pin the inherited parent provider rather
+    # than letting /model auto-detect a different one from the model name.
+    assert mock_switch.call_args.kwargs["explicit_provider"] == "anthropic"
+
+
+def test_model_only_inherits_delegation_provider_before_parent():
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "delegation": {
+                "model": "delegation-model",
+                "provider": "openrouter",
+                "base_url": "https://delegation.test/v1",
+                "api_key": "delegation-key",
+            }
+        },
+    ), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={"command": None, "args": []},
+    ):
+        mock_switch.return_value = _switch_result(
+            new_model="task-model", target_provider="openrouter"
+        )
+        route = resolve_model_provider_override(
+            model_input="task-model", provider_input=None, parent_agent=_parent()
+        )
+
+    kwargs = mock_switch.call_args.kwargs
+    assert kwargs["raw_input"] == "task-model"
+    assert kwargs["explicit_provider"] == "openrouter"
+    assert kwargs["current_provider"] == "openrouter"
+    assert kwargs["current_model"] == "delegation-model"
+    assert kwargs["current_base_url"] == "https://delegation.test/v1"
+    assert kwargs["current_api_key"] == "delegation-key"
+    assert route["model"] == "task-model"
+    assert route["provider"] == "openrouter"
+
+
+def test_provider_only_inherits_delegation_model_before_parent():
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "delegation": {
+                "model": "delegation-model",
+                "provider": "openrouter",
+            }
+        },
+    ), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={"command": None, "args": []},
+    ):
+        mock_switch.return_value = _switch_result(
+            new_model="delegation-model", target_provider="deepseek"
+        )
+        route = resolve_model_provider_override(
+            model_input=None, provider_input="deepseek", parent_agent=_parent()
+        )
+
+    kwargs = mock_switch.call_args.kwargs
+    assert kwargs["raw_input"] == "delegation-model"
+    assert kwargs["explicit_provider"] == "deepseek"
+    assert kwargs["current_provider"] == "openrouter"
+    assert kwargs["current_model"] == "delegation-model"
+    assert route["model"] == "delegation-model"
+    assert route["provider"] == "deepseek"
+
+
+def test_model_only_preserves_direct_delegation_base_url():
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "delegation": {
+                "model": "delegation-model",
+                "base_url": "https://delegation.test/v1",
+                "api_key": "delegation-key",
+            }
+        },
+    ), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={"command": None, "args": []},
+    ):
+        mock_switch.return_value = _switch_result(
+            new_model="task-model", target_provider="custom"
+        )
+        resolve_model_provider_override(
+            model_input="task-model", provider_input=None, parent_agent=_parent()
+        )
+
+    kwargs = mock_switch.call_args.kwargs
+    assert kwargs["explicit_provider"] == "custom"
+    assert kwargs["current_provider"] == "custom"
+    assert kwargs["current_base_url"] == "https://delegation.test/v1"
+    assert kwargs["current_api_key"] == "delegation-key"
+
+
+def test_preserves_current_host_request_overrides_and_runtime_max_output_tokens():
+    with patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={
+            "command": None,
+            "args": [],
+            "request_overrides": {"ignored": "switch result already won"},
+            "max_output_tokens": 4096,
+        },
+    ):
+        result = _switch_result(new_model="m", target_provider="custom")
+        result.request_overrides = {"extra_body": {"chat_template_kwargs": {"x": 1}}}
+        mock_switch.return_value = result
+        route = resolve_model_provider_override(
+            model_input="m", provider_input="custom", parent_agent=_parent()
+        )
+
+    assert route["request_overrides"] == {
+        "extra_body": {"chat_template_kwargs": {"x": 1}}
+    }
+    assert route["max_output_tokens"] == 4096
+
+
+def test_runtime_request_overrides_are_used_when_switch_result_lacks_field():
+    with patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={
+            "command": None,
+            "args": [],
+            "request_overrides": {"extra_body": {"thinking": {"type": "disabled"}}},
+        },
+    ):
+        mock_switch.return_value = _switch_result(new_model="m", target_provider="custom")
+        route = resolve_model_provider_override(
+            model_input="m", provider_input="custom", parent_agent=_parent()
+        )
+
+    assert route["request_overrides"] == {
+        "extra_body": {"thinking": {"type": "disabled"}}
+    }

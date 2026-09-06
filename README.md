@@ -1,14 +1,14 @@
 # hermes-delegate-routing
 
-**A fork-free [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds explicit per-task `model` / `provider` routing to `delegate_task`.**
+**A fork-free [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds explicit per-task `model` / `provider` / `reasoning_effort` routing to `delegate_task`.**
 
-Route each subagent in a batch delegation to a different model/provider:
+Route each subagent in a batch delegation to a different model/provider/reasoning effort:
 
 ```jsonc
 delegate_task(tasks=[
-  {"goal": "Summarize these logs",      "model": "gemini-flash-2.0", "provider": "openrouter"},
-  {"goal": "Review this diff for bugs", "model": "sonnet",           "provider": "anthropic"},
-  {"goal": "Research the CVE",          "model": "deepseek-pro",     "provider": "deepseek"}
+  {"goal": "Summarize these logs",      "model": "gemini-flash-2.0", "provider": "openrouter", "reasoning_effort": "low"},
+  {"goal": "Review this diff for bugs", "model": "sonnet",           "provider": "anthropic",  "reasoning_effort": "high"},
+  {"goal": "Research the CVE",          "model": "deepseek-pro",     "provider": "deepseek",   "reasoning_effort": "medium"}
 ])
 ```
 
@@ -35,8 +35,8 @@ plugins:
 
 # optional:
 delegate_routing:
-  on_error: fail   # "fail" (default) → a bad model/provider fails the call;
-                   # "fallback"       → skip the override, use batch creds, log a warning
+  on_error: fail   # "fail" (default) → a bad task routing override fails the call;
+                   # "fallback"       → skip the override, use normal routing, log a warning
 ```
 
 No `allow_tool_override` grant is needed — the plugin does not use the registry
@@ -47,17 +47,25 @@ override API (see "How it works").
 Put routing fields inside `tasks[]` — **even for a single task**:
 
 ```python
-delegate_task(tasks=[{"goal": "…", "model": "sonnet", "provider": "anthropic"}])
+delegate_task(tasks=[{"goal": "…", "model": "sonnet", "provider": "anthropic", "reasoning_effort": "high"}])
 ```
 
 - `model` — a model name/alias as used by `/model` (e.g. `sonnet`,
   `gemini-flash-2.0`), optionally with inline `--provider <id>`.
 - `provider` — a configured provider id. Prefer this structured field over
   embedding `--provider` in `model`.
-- Precedence: per-task `tasks[i]` → `delegation.*` config → parent agent.
-- A task with no `model`/`provider` inherits the normal delegation model.
+- `reasoning_effort` — the same effort vocabulary understood by the installed
+  Hermes version (for current Hermes: `none`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, `max`, `ultra`). Hermes still owns provider-specific clamping and wire
+  formatting.
+- Precedence per field: `tasks[i].model/provider/reasoning_effort` → matching
+  `delegation.*` config → parent agent inheritance.
+- A model-only task keeps the inherited delegation/parent provider pinned; a
+  provider-only task keeps the inherited delegation/parent model. Omitted fields
+  do not silently fall through to `/model` auto-detection.
+- Omitting a field preserves normal Hermes delegation behavior for that field.
 
-**Top-level `delegate_task(model=…, provider=…)` is intentionally not supported** —
+**Top-level `delegate_task(model=…, provider=…, reasoning_effort=…)` is intentionally not supported** —
 the host drops top-level args before the tool runs, so only `tasks[]` fields take
 effect. This matches the recommended call shape (see [`docs/DESIGN.md`](docs/DESIGN.md)).
 
@@ -68,11 +76,15 @@ effect. This matches the recommended call shape (see [`docs/DESIGN.md`](docs/DES
 `register_tool(override=True)` mechanism can't intercept it. Instead the plugin
 installs three narrow, idempotent monkeypatches on `tools.delegate_tool` at load:
 
-1. **schema** — advertise `tasks[].model` / `tasks[].provider` to the model
-   (via the registered `ToolEntry`);
-2. **capture** — wrap `delegate_task` to resolve per-task creds (reusing the
-   host `/model` switch pipeline) and stash them by task index;
-3. **apply** — wrap `_build_child_agent` to inject those creds per child.
+1. **schema** — advertise `tasks[].model` / `tasks[].provider` /
+   `tasks[].reasoning_effort` to the model (via the registered `ToolEntry`);
+2. **capture** — wrap `delegate_task` to resolve per-task model/provider state via
+   the host `/model` switch pipeline and reasoning via Hermes' `parse_reasoning_effort()`,
+   then stash it by task index;
+3. **apply** — wrap `_build_child_agent` to inject task routing per child. Hermes
+   builds the child normally first, then an explicit task reasoning effort replaces
+   the child's `reasoning_config`, so provider-specific request translation remains
+   entirely in Hermes.
 
 If the host isn't importable or its function signatures don't match,
 `apply_patches()` **refuses to patch** and the plugin degrades to a no-op — core
@@ -84,8 +96,9 @@ Verified against upstream [`NousResearch/hermes-agent`](https://github.com/NousR
 
 | hermes-agent | Status |
 |---|---|
-| `0.19.0` (tag [`v2026.7.20`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20)) | ✅ verified — seams, resolver, Tier-1 end-to-end routing, and the real host plugin-loader path all exercised against the host |
-| `0.18.0` | ✅ verified (earlier release) |
+| `0.21.0` (checkout `63279301`, tested 2026-09-07) | ✅ verified — current schema/signatures plus deterministic request-boundary model/provider/reasoning E2E |
+| `0.19.0` (tag [`v2026.7.20`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20)) | ✅ verified — original E2E coverage plus 0.2.0 signature/schema/reasoning compatibility check |
+| `0.18.0` (tag `v2026.7.1`) | ✅ verified — 0.2.0 signature/schema/reasoning compatibility; host supports efforts through `xhigh` |
 
 Because the plugin depends on host internals, new hermes-agent releases can
 drift. The signature guard turns drift into a **safe no-op with a loud log**, not

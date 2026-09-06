@@ -76,6 +76,37 @@ def _install_fake_hermes_cli() -> None:
 _install_fake_hermes_cli()
 
 
+def _install_fake_hermes_constants() -> None:
+    try:
+        import hermes_constants  # noqa: F401
+        return
+    except Exception:
+        pass
+
+    mod = types.ModuleType("hermes_constants")
+    valid = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+
+    def _fake_parse_reasoning_effort(effort):
+        if effort is False:
+            return {"enabled": False}
+        if effort is None or effort is True:
+            return None
+        value = str(effort).strip().lower()
+        if not value:
+            return None
+        if value in {"none", "false", "disabled"}:
+            return {"enabled": False}
+        if value in valid:
+            return {"enabled": True, "effort": value}
+        return None
+
+    mod.parse_reasoning_effort = _fake_parse_reasoning_effort
+    sys.modules["hermes_constants"] = mod
+
+
+_install_fake_hermes_constants()
+
+
 @pytest.fixture(autouse=True)
 def _restore_host_delegate_state():
     """Isolate tests that monkeypatch the real host.

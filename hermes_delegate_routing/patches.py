@@ -3,14 +3,14 @@
 Three narrow wrappers over ``tools.delegate_tool`` module attributes (see
 docs/DESIGN.md §6):
 
-  A. schema  — advertise ``tasks[].model`` / ``tasks[].provider`` to the LLM
-  B. capture — resolve per-task creds and stash them by task_index
-  C. apply   — inject stashed creds into each ``_build_child_agent`` call
+  A. schema  — advertise per-task model/provider/reasoning fields to the LLM
+  B. capture — resolve per-task routing state and stash it by task_index
+  C. apply   — inject stashed routing into each ``_build_child_agent`` call
 
 This module defines the wrapper *factories*; the orchestration that imports the
 host, validates signatures, and installs them lives in ``apply_patches()``.
-Only per-task ``tasks[]`` fields are supported — top-level
-``model``/``provider`` never reach the tool (DESIGN §6.1).
+Only per-task ``tasks[]`` fields are supported — top-level routing fields never
+reach the tool (DESIGN §6.1).
 """
 
 from __future__ import annotations
@@ -71,10 +71,16 @@ _TASK_PROVIDER_DESC = (
     "provider must be configured in Hermes. Prefer this structured field over "
     "embedding '--provider' in 'model' for JSON tool calls."
 )
+_TASK_REASONING_DESC = (
+    "Per-task reasoning effort override. Uses the same values as Hermes "
+    "reasoning_effort (for example 'none', 'minimal', 'low', 'medium', 'high', "
+    "'xhigh', 'max', or 'ultra', depending on the host version). When omitted, "
+    "normal delegation.reasoning_effort > parent-agent inheritance is preserved."
+)
 
 
 def make_schema_override(orig_builder):
-    """Wrap ``_build_dynamic_schema_overrides`` to advertise tasks[].model/provider.
+    """Wrap the host schema builder to advertise per-task routing fields.
 
     Deep-copies the original output before injecting because the host builder only
     shallow-copies each property, leaving ``tasks.items`` aliased to the static
@@ -91,11 +97,15 @@ def make_schema_override(orig_builder):
         except (KeyError, TypeError):
             logger.warning(
                 "delegate-routing: unexpected delegate schema shape; "
-                "not advertising model/provider fields"
+                "not advertising per-task routing fields"
             )
             return result
         props.setdefault("model", {"type": "string", "description": _TASK_MODEL_DESC})
         props.setdefault("provider", {"type": "string", "description": _TASK_PROVIDER_DESC})
+        props.setdefault(
+            "reasoning_effort",
+            {"type": "string", "description": _TASK_REASONING_DESC},
+        )
         return result
 
     return _wrapped
@@ -103,16 +113,29 @@ def make_schema_override(orig_builder):
 
 # --- Seam B: capture --------------------------------------------------------
 
-def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", tool_error=None):
-    """Wrap ``delegate_task`` to resolve per-task creds into ROUTING by index.
+def _resolve_reasoning_override(value):
+    """Parse an explicit task reasoning effort through the host chokepoint."""
+    try:
+        from hermes_constants import parse_reasoning_effort
+    except Exception as exc:  # pragma: no cover - host import guard
+        raise ValueError(f"Cannot import Hermes reasoning parser: {exc}") from exc
 
-    Reads ``tasks[i].model`` / ``tasks[i].provider`` (top-level model/provider
-    never reach the tool — DESIGN §6.1), resolves each via ``resolver`` and stashes
-    the creds keyed by task index for the apply seam to consume. The original is
-    then called unchanged; ROUTING is always reset afterwards.
+    parsed = parse_reasoning_effort(value)
+    if parsed is None:
+        raise ValueError(f"Unsupported reasoning_effort {value!r}")
+    return dict(parsed)
+
+
+def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", tool_error=None):
+    """Wrap ``delegate_task`` to resolve per-task routing into ROUTING by index.
+
+    ``model`` / ``provider`` are resolved through the host ``/model`` pipeline.
+    Explicit ``reasoning_effort`` is parsed through the host reasoning chokepoint.
+    The resulting state is keyed by task index for the apply seam to consume.
+    The original is then called unchanged; ROUTING is always reset afterwards.
 
     ``on_error``: 'fail' (default) → return a tool error and do not delegate;
-    'fallback' → skip the failed override (child uses batch/config creds) and log.
+    'fallback' → skip the failed override (child uses batch/config routing) and log.
     """
 
     def _wrapped(goal=None, context=None, tasks=None, max_iterations=None,
@@ -124,25 +147,37 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                     continue
                 model = t.get("model")
                 provider = t.get("provider")
-                if not (model or provider):
+                has_model_provider = bool(model or provider)
+                reasoning_effort = t.get("reasoning_effort")
+                has_reasoning = "reasoning_effort" in t and reasoning_effort is not None
+                if not has_model_provider and not has_reasoning:
                     continue
                 try:
-                    routing[i] = resolver(
-                        model_input=model,
-                        provider_input=provider,
-                        parent_agent=parent_agent,
-                    )
+                    route = {}
+                    if has_model_provider:
+                        route.update(resolver(
+                            model_input=model,
+                            provider_input=provider,
+                            parent_agent=parent_agent,
+                        ))
+                    if has_reasoning:
+                        route["reasoning_config"] = _resolve_reasoning_override(
+                            reasoning_effort
+                        )
+                    routing[i] = route
                 except Exception as exc:
                     if on_error == "fallback":
                         logger.warning(
-                            "delegate-routing: task %d override (model=%r provider=%r) "
-                            "failed to resolve, using batch/config creds: %s",
-                            i, model, provider, exc,
+                            "delegate-routing: task %d override "
+                            "(model=%r provider=%r reasoning_effort=%r) failed to resolve; "
+                            "using batch/config routing: %s",
+                            i, model, provider, reasoning_effort, exc,
                         )
                         continue
                     return _tool_error(
-                        f"delegate_task routing: could not resolve model/provider "
-                        f"for task {i} (model={model!r}, provider={provider!r}): {exc}",
+                        "delegate_task routing: could not resolve task override "
+                        f"for task {i} (model={model!r}, provider={provider!r}, "
+                        f"reasoning_effort={reasoning_effort!r}): {exc}",
                         tool_error,
                     )
         token = ROUTING.set(routing)
@@ -182,9 +217,18 @@ def make_build_child_wrapper(orig_build_child):
             override_api_mode = creds.get("api_mode") or override_api_mode
             override_acp_command = creds.get("command") or override_acp_command
             override_acp_args = creds.get("args") or override_acp_args
+
+            # Hermes 0.21 carries provider personality through these newer
+            # build-child kwargs. Only override them when the host resolver
+            # actually surfaced task-specific values, so older hosts retain
+            # their existing delegation behavior unchanged.
+            if creds.get("request_overrides") is not None:
+                extra["override_request_overrides"] = dict(creds["request_overrides"])
+            if creds.get("max_output_tokens") is not None:
+                extra["override_max_tokens"] = creds["max_output_tokens"]
         # Forward by keyword (not position) so a future host that inserts/appends
         # a parameter can't silently misalign creds.
-        return orig_build_child(
+        child = orig_build_child(
             task_index=task_index, goal=goal, context=context, toolsets=toolsets,
             model=model, max_iterations=max_iterations, task_count=task_count,
             parent_agent=parent_agent, override_provider=override_provider,
@@ -193,6 +237,15 @@ def make_build_child_wrapper(orig_build_child):
             override_acp_command=override_acp_command,
             override_acp_args=override_acp_args, role=role, **extra,
         )
+
+        # The host resolves delegation.reasoning_effort > parent while building
+        # the child. Apply a task-local override afterwards, so omission preserves
+        # that native precedence and provider-specific wire translation remains
+        # entirely in Hermes transports. Requests read agent.reasoning_config at
+        # call time on supported hosts.
+        if creds and "reasoning_config" in creds:
+            child.reasoning_config = dict(creds["reasoning_config"])
+        return child
 
     return _wrapped
 
@@ -224,8 +277,8 @@ def _invalidate_tool_defs_cache(registry) -> None:
     directly does NOT bump ``_generation`` (only register/deregister do), so a
     long-running gateway that populated the memo with the stock schema BEFORE we
     patched keeps serving the field-less schema for the life of the process —
-    the LLM never sees ``tasks[].model``/``.provider`` and can't route. Both
-    hooks below are private host internals; each is best-effort and guarded so a
+    the LLM never sees the per-task routing fields and can't route. Both hooks
+    below are private host internals; each is best-effort and guarded so a
     future host that renames them just degrades to no invalidation.
     """
     try:
@@ -257,14 +310,14 @@ def _patch_schema(dt) -> None:
         entry = registry.get_entry("delegate_task")
     except Exception as exc:
         logger.warning(
-            "delegate-routing: registry unavailable; model/provider fields "
+            "delegate-routing: registry unavailable; per-task routing fields "
             "will not be advertised in the schema: %s", exc,
         )
         return
     if entry is None:
         logger.warning(
-            "delegate-routing: delegate_task not in registry; schema fields "
-            "not advertised"
+            "delegate-routing: delegate_task not in registry; per-task routing "
+            "fields not advertised"
         )
         return
     current = getattr(entry, "dynamic_schema_overrides", None) or getattr(
@@ -339,6 +392,7 @@ def apply_patches() -> bool:
         dt._HDR_PATCHED = True
         logger.info(
             "delegate-routing: active — patched delegate_task, _build_child_agent, "
-            "and delegate schema (on_error=%s)", on_error,
+            "and delegate schema for model/provider/reasoning routing (on_error=%s)",
+            on_error,
         )
         return True

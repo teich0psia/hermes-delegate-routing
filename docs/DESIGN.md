@@ -1,19 +1,19 @@
 # Design — `hermes-delegate-routing`
 
-A fork-free Hermes Agent plugin that adds explicit per-task `model` / `provider`
-routing to `delegate_task`. This document explains what it does, why it's built as
+A fork-free Hermes Agent plugin that adds explicit per-task `model` / `provider` /
+`reasoning_effort` routing to `delegate_task`. This document explains what it does, why it's built as
 a load-time monkeypatch, and where it couples to host internals.
 
 ## 1. Summary
 
-`delegate_task` normally runs every subagent in a batch on one model/provider
-(from `delegation.*` config). This plugin lets each task pick its own:
+`delegate_task` normally runs every subagent in a batch on shared delegation
+routing. This plugin lets each task pick its own model/provider/reasoning effort:
 
 ```jsonc
 delegate_task(tasks=[
-  {"goal": "Summarize these logs",      "model": "gemini-flash-2.0", "provider": "openrouter"},
-  {"goal": "Review this diff for bugs", "model": "sonnet",           "provider": "anthropic"},
-  {"goal": "Research the CVE",          "model": "deepseek-pro",     "provider": "deepseek"}
+  {"goal": "Summarize these logs",      "model": "gemini-flash-2.0", "provider": "openrouter", "reasoning_effort": "low"},
+  {"goal": "Review this diff for bugs", "model": "sonnet",           "provider": "anthropic",  "reasoning_effort": "high"},
+  {"goal": "Research the CVE",          "model": "deepseek-pro",     "provider": "deepseek",   "reasoning_effort": "medium"}
 ])
 ```
 
@@ -35,13 +35,12 @@ delivers the capability without maintaining a fork of a fast-moving codebase.
 
 ### Non-goals
 
-- **Top-level `delegate_task(model=…, provider=…)`** (outside `tasks[]`). The host
+- **Top-level `delegate_task(model=…, provider=…, reasoning_effort=…)`** (outside `tasks[]`). The host
   drops top-level args before the tool runs (§5), and the `tasks=[{…}]` shape is
   the recommended one anyway. Not designed out — just not wired.
 - **Heuristic/auto routing** (classify a task → pick a model). Different products
   exist for that (`hermes-model-router`, `cobalt-agent`). This plugin does
-  **explicit** routing only — the caller names the model/provider.
-- **Per-task `reasoning_effort`.** A reasonable follow-up; out of scope for now.
+  **explicit** routing only — the caller names the model/provider/reasoning effort.
 
 ## 3. Prior art
 
@@ -80,20 +79,20 @@ capture seam.
 
 ## 5. Host runtime constraints (why the design is shaped this way)
 
-Facts about the host that dictate the approach (file:line against hermes-agent
-0.18.0):
+Facts about the host that dictate the approach (originally verified against
+0.18.0; re-verified against the installed 0.21.0 checkout):
 
 1. **`delegate_task` has no `**kwargs`** (`tools/delegate_tool.py`: `goal, context,
    tasks, max_iterations, role, background, parent_agent`). An unknown kwarg raises.
 2. **Top-level args are whitelisted out.** Both call sites — the registry handler
    lambda and `run_agent._dispatch_delegate_task` (used from
    `agent/agent_runtime_helpers.py` and `agent/tool_executor.py`) — forward only
-   `goal/context/tasks/max_iterations/role`. So top-level `model`/`provider` never
+   only its supported control/spawn arguments. So top-level routing fields never
    reach the tool.
 3. **Per-task fields survive.** `_strip_model_hidden_task_fields` strips only
-   `{"acp_command","acp_args"}`, so `model`/`provider` inside `tasks[i]` reach the
-   build loop — which currently ignores them (uses one batch cred bundle for all
-   children).
+   `{"acp_command","acp_args"}`, so `model`/`provider`/`reasoning_effort` inside
+   `tasks[i]` reach the build loop — which currently ignores these per-task routing
+   fields and uses the batch/config routing for construction.
 4. **`_build_child_agent`** is a module-level function called with `task_index=i`
    and `override_provider/base_url/api_key/api_mode/...`. It receives only
    `task_index`, not the task dict — so per-task creds must be correlated by index.
@@ -101,9 +100,11 @@ Facts about the host that dictate the approach (file:line against hermes-agent
    (`parse_model_flags`, `switch_model`), `hermes_cli.config.load_config`,
    `hermes_cli.runtime_provider.resolve_runtime_provider` — no new primitives.
 
-**Implication:** the only channel that reaches the tool is `tasks[i].model` /
-`tasks[i].provider`, and the only place to apply per-task creds without
-reimplementing the build loop is `_build_child_agent`, keyed by `task_index`.
+**Implication:** the only routing channel that reaches the tool is `tasks[i]`; the
+only place to apply model/provider routing without reimplementing the build loop is
+`_build_child_agent`, keyed by `task_index`. Explicit reasoning can use the same
+index correlation and then replace `child.reasoning_config` after native child
+construction.
 
 ## 6. Design — three seams
 
@@ -113,19 +114,29 @@ All three patch attributes of `tools.delegate_tool` (or its registered
 the module attributes reaches every call path.
 
 - **A — schema.** Wrap the tool's `dynamic_schema_overrides` builder to advertise
-  `tasks[].model` and `tasks[].provider` to the model. (Updates the registered
-  `ToolEntry`, since the registry holds a direct reference to the builder.)
+  `tasks[].model`, `tasks[].provider`, and `tasks[].reasoning_effort` to the model.
+  (Updates the registered `ToolEntry`, since the registry holds a direct reference
+  to the builder.)
 - **B — capture.** Wrap `delegate_task`: for each task with a `model`/`provider`,
-  resolve a full cred bundle via the host `/model` switch pipeline and stash it in
-  a `ContextVar` keyed by task index; then call the original. The build loop runs
-  synchronously within this call, so the `ContextVar` is in scope when seam C fires
+  resolve a full route bundle via the host `/model` switch pipeline; for an explicit
+  `reasoning_effort`, call Hermes' own `parse_reasoning_effort()`. Stash the combined
+  routing state in a `ContextVar` keyed by task index; then call the original. The
+  build loop runs synchronously within this call, so the `ContextVar` is in scope
+  when seam C fires
   — including for `background=True` delegations (only child *execution* is
   deferred, not construction).
-- **C — apply.** Wrap `_build_child_agent`: look up the stashed creds by
-  `task_index` and override `model`/`override_*` before calling the original. Tasks
-  with no override pass through with the normal batch creds.
+- **C — apply.** Wrap `_build_child_agent`: look up the stashed route by
+  `task_index` and override `model`/`override_*` before calling the original. After
+  Hermes constructs the child normally, apply an explicit task `reasoning_effort`
+  to `child.reasoning_config`. Tasks with no override pass through unchanged. This
+  keeps provider-specific reasoning translation in Hermes' normal transports.
 
-**Precedence:** per-task `tasks[i]` → `delegation.*` config → parent agent.
+**Precedence (per field):** `tasks[i].model/provider/reasoning_effort` → matching
+`delegation.*` config → parent agent. A model-only task pins the inherited
+provider, and a provider-only task reuses the inherited model; omitted fields are
+not handed back to `/model` auto-detection. In particular, omitting task
+`reasoning_effort` leaves Hermes' native `delegation.reasoning_effort > parent`
+resolution untouched.
 
 ### 6.1 Why not the registry override API
 
@@ -165,10 +176,10 @@ monkeypatch.
 
 ## 9. Failure modes
 
-- **Unresolvable model/provider:** default **fail-hard** — the `delegate_task` call
+- **Unresolvable model/provider/reasoning effort:** default **fail-hard** — the `delegate_task` call
   returns a tool error naming the bad value. Config toggle
   `delegate_routing.on_error: fail | fallback`; `fallback` skips the override (the
-  task uses batch/config creds) and logs a warning.
+  task uses normal batch/config routing) and logs a warning.
 - **Host missing / signature mismatch:** `apply_patches()` validates the target
   signatures and **refuses to patch** on any mismatch, logging a loud warning. The
   plugin degrades to a no-op; core behavior is untouched (never half-patched).
@@ -180,7 +191,7 @@ monkeypatch.
 
 The core cost of this approach is dependence on host internals
 (`delegate_task`, `_build_child_agent`, `_build_dynamic_schema_overrides`,
-`parse_model_flags`, `_strip_model_hidden_task_fields`). Mitigations:
+`parse_model_flags`, `parse_reasoning_effort`, `_strip_model_hidden_task_fields`). Mitigations:
 
 - **Signature guard** at patch time turns host drift into a safe no-op with a loud
   log, not a crash.
@@ -191,12 +202,12 @@ The core cost of this approach is dependence on host internals
 - If the host ever ships native per-task routing, the plugin can detect it and
   no-op.
 
-### Evidence index (hermes-agent 0.18.0)
+### Evidence index (hermes-agent 0.21.0 checkout `63279301`; original seams also verified on 0.18/0.19)
 
 - `tools/delegate_tool.py` — `delegate_task` signature (no `**kwargs`); child build
   loop (batch-wide creds); `_build_child_agent`; `_strip_model_hidden_task_fields`
-  = `{"acp_command","acp_args"}`; registry registration; per-subagent result
-  `model`.
+  = `{"acp_command","acp_args"}`; native `delegation.reasoning_effort > parent`
+  resolution; registry registration; per-subagent result `model`.
 - `run_agent.py` — `_dispatch_delegate_task` (whitelists args; direct import,
   bypasses registry).
 - `agent/agent_runtime_helpers.py`, `agent/tool_executor.py` — `delegate_task`

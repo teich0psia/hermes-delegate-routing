@@ -1,8 +1,8 @@
 # End-to-End / CI Testing Design
 
 Design notes for automating end-to-end routing tests — proving a real subagent
-actually *connects* to the routed model/provider. Grounded against hermes-agent
-0.18.0.
+actually *connects* with the routed model/provider/reasoning configuration.
+Originally grounded against hermes-agent 0.18.0 and re-verified on 0.21.0.
 
 **Status:** Tier 1 is implemented and shipped as `tests/test_e2e_routing.py`. It
 self-skips without a host and runs in CI via the opt-in `e2e` job (see
@@ -11,9 +11,9 @@ self-skips without a host and runs in CI via the opt-in `e2e` job (see
 ## The gap
 
 The shipped tests verify the seams install, the schema advertises
-`tasks[].model/provider`, creds resolve, and per-task creds land on
-`_build_child_agent` by index. What they don't verify: that `override_base_url` /
-`model` actually reach the child's outbound HTTP request.
+`tasks[].model/provider/reasoning_effort`, routing resolves, and per-task routing
+lands on `_build_child_agent` by index. Tier 1 also verifies that routed base URL,
+model, and reasoning effort reach the child's outbound SDK request boundary.
 
 ## Core idea
 
@@ -64,9 +64,9 @@ The shipped tests verify the seams install, the schema advertises
 **Tier 1 (recommended gate — implemented in `tests/test_e2e_routing.py`):** build a
 real parent `AIAgent`, activate the plugin, patch `run_agent.OpenAI` with a
 recording fake, mock the `switch_model` catalog boundary to two distinct bundles,
-call `delegate_task(tasks=[{…m1…},{…m2…}], background=False)`, and assert both
-routed `base_url`/`model` pairs reach the client boundary. Deterministic, no
-network.
+call `delegate_task(tasks=[{…m1…},{…m2…}], background=False)`, and assert both routed `base_url`/`model` pairs reach the client boundary. A second
+case pins distinct task reasoning efforts and asserts they reach Hermes' normal
+reasoning request payload. Deterministic, no network.
 
 **Tier 2:** as Tier 1 but point `custom_providers.base_url` at a local
 `BaseHTTPRequestHandler` (or a proxy) that records `(path, model)` and returns a

@@ -1,30 +1,36 @@
-"""hermes-delegate-routing — explicit per-task model/provider routing for delegate_task.
+"""hermes-delegate-routing — explicit per-task delegate routing.
 
 A fork-free Hermes Agent plugin. It lets a batch delegation route each subagent
-to a different model/provider via per-task fields:
+to a different model/provider/reasoning effort via per-task fields:
 
     delegate_task(tasks=[
-        {"goal": "cheap summarize", "model": "gemini-flash-2.0", "provider": "openrouter"},
-        {"goal": "careful review",  "model": "sonnet",           "provider": "anthropic"},
+        {
+            "goal": "cheap summarize", "model": "gemini-flash-2.0",
+            "provider": "openrouter", "reasoning_effort": "low",
+        },
+        {
+            "goal": "careful review", "model": "sonnet",
+            "provider": "anthropic", "reasoning_effort": "high",
+        },
     ])
 
 Design and rationale live in docs/DESIGN.md. In short: `delegate_task` is
 special-cased in the host runtime to bypass the tool registry, so the sanctioned
 `register_tool(override=True)` path cannot intercept it. This plugin instead
 applies three narrow, idempotent monkeypatches to `tools.delegate_tool` at load
-time (schema advertise → capture per-task creds → apply per child). See
+time (schema advertise → capture per-task routing → apply per child). See
 docs/DESIGN.md §6 and §6.1.
 
-Only per-task `tasks[i].model`/`.provider` is supported (top-level is dropped by
-the host before it reaches the tool). This matches upstream's own recommended
-call shape.
+Only per-task `tasks[i].model`/`.provider`/`.reasoning_effort` is supported
+(top-level routing fields are dropped by the host before they reach the tool).
+This matches upstream's own recommended `tasks=[...]` call shape.
 """
 
 from __future__ import annotations
 
 import logging
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 logger = logging.getLogger(__name__)
 
