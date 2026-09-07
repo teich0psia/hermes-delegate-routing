@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-delegate-routing"
-version = "0.2.4"
+version = "0.3.0"
 description = "Hermes Agent plugin: explicit per-task model/provider/reasoning routing for delegate_task (fork-free)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,7 +47,7 @@ Changelog = "https://github.com/teich0psia/hermes-delegate-routing/blob/main/CHA
 packages = ["hermes_delegate_routing"]
 
 [tool.setuptools.package-data]
-hermes_delegate_routing = ["py.typed"]
+hermes_delegate_routing = ["py.typed", "skills/delegate-routing/SKILL.md", "skills/delegate-routing/references/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

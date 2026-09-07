@@ -71,24 +71,42 @@ def _tool_error(msg: str, tool_error=None) -> str:
 
 # --- Seam A: schema ---------------------------------------------------------
 
+# Qualified plugin-skill name for recovery pointers (namespace = entry-point
+# name ``delegate_routing``; bare name = skill directory name). Keep in sync
+# with hermes_delegate_routing/skills/delegate-routing/SKILL.md and register().
+_SKILL_REF = "delegate_routing:delegate-routing"
+_SKILL_HINT = (
+    f" See skill '{_SKILL_REF}' via skill_view (per-task routing lives inside "
+    "tasks[i] only; there is no top-level model/provider/reasoning_effort argument)."
+)
+_MINIMAL_EXAMPLE = (
+    '{"tasks": [{"goal": "...", "model": "<exact /model name>", '
+    '"provider": "<exact provider id>"}]}'
+)
+
 _TASK_MODEL_DESC = (
-    "Per-task model override for this subagent. Accepts a model name or alias as "
-    "used by /model (e.g. 'sonnet', 'gemini-flash-2.0'), optionally with an "
+    "Per-task model for THIS child only — set inside tasks[i]; there is no "
+    "top-level model argument (dropped before the tool runs). Accepts a /model "
+    "name or alias (e.g. 'sonnet', 'gemini-flash-2.0'), optionally with an "
     "inline '--provider <id>'. Do NOT use provider:model syntax; set the separate "
-    "'provider' field instead. When omitted, the child inherits the batch/config "
-    "model."
+    "'provider' field instead. A model-only task stays on the inherited "
+    "delegation/parent provider — set both model and provider to cross providers. "
+    "Use the exact literal; unresolvable values fail the whole call (fail-closed). "
+    "When omitted, the child inherits the batch/config model."
 )
 _TASK_PROVIDER_DESC = (
-    "Per-task provider override. When set, this subagent connects to the specified "
-    "provider instead of inheriting from delegation.provider or the parent. The "
-    "provider must be configured in Hermes. Prefer this structured field over "
+    "Per-task provider id for THIS child only — set inside tasks[i]; there is no "
+    "top-level provider argument. Must be an exact configured provider id; "
+    "unresolvable values fail the whole call (fail-closed). A provider-only task "
+    "reuses the inherited delegation/parent model. Prefer this structured field over "
     "embedding '--provider' in 'model' for JSON tool calls."
 )
 _TASK_REASONING_DESC = (
-    "Per-task reasoning effort override. Uses the same values as Hermes "
-    "reasoning_effort (for example 'none', 'minimal', 'low', 'medium', 'high', "
-    "'xhigh', 'max', or 'ultra', depending on the host version). When omitted, "
-    "normal delegation.reasoning_effort > parent-agent inheritance is preserved."
+    "Per-task reasoning effort for THIS child only — set inside tasks[i]. Uses the "
+    "same values as Hermes reasoning_effort (for example 'none', 'minimal', 'low', "
+    "'medium', 'high', 'xhigh', 'max', or 'ultra', depending on the host version). "
+    "When omitted, normal delegation.reasoning_effort > parent-agent inheritance "
+    "is preserved."
 )
 
 
@@ -190,7 +208,8 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                     return _tool_error(
                         "delegate_task routing: could not resolve task override "
                         f"for task {i} (model={model!r}, provider={provider!r}, "
-                        f"reasoning_effort={reasoning_effort!r}): {exc}",
+                        f"reasoning_effort={reasoning_effort!r}): {exc}."
+                        f"{_SKILL_HINT} Example: {_MINIMAL_EXAMPLE}",
                         tool_error,
                     )
         token = ROUTING.set(routing)

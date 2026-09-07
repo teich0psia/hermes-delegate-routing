@@ -29,22 +29,46 @@ This matches upstream's own recommended `tasks=[...]` call shape.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-__version__ = "0.2.4"
+__version__ = "0.3.0"
 
 logger = logging.getLogger(__name__)
+
+_SKILL_DIRNAME = "delegate-routing"
+_SKILL_FILENAME = "SKILL.md"
+
+
+def _register_bundled_skill(ctx) -> None:
+    """Register the bundled recovery skill (best-effort, never fatal).
+
+    Plugin skills are read-only and namespaced (``delegate_routing:delegate-routing``);
+    they do not enter ``~/.hermes/skills/`` nor ``<available_skills>``. The skill
+    exists so the routing-failure error pointer always has a live target.
+    """
+    if ctx is None or not hasattr(ctx, "register_skill"):
+        return
+    skill_md = Path(__file__).parent / "skills" / _SKILL_DIRNAME / _SKILL_FILENAME
+    if not skill_md.exists():
+        logger.debug("hermes-delegate-routing: bundled skill missing at %s", skill_md)
+        return
+    try:
+        ctx.register_skill(_SKILL_DIRNAME, skill_md)
+    except Exception:  # pragma: no cover - registration must never break startup
+        logger.debug("hermes-delegate-routing: bundled skill registration failed", exc_info=True)
 
 
 def register(ctx=None) -> None:
     """Plugin entry point — called once at startup by the Hermes plugin loader.
 
-    Installs the four monkeypatch seams (schema, capture, apply, async display).
-    Safe to call without a live ``ctx``. Never raises: if the
-    host is missing or its signatures don't match, the plugin degrades to a
-    no-op and logs a warning (see ``patches.apply_patches``).
+    Installs the four monkeypatch seams (schema, capture, apply, async display)
+    plus the bundled recovery skill. Safe to call without a live ``ctx``.
+    Never raises: if the host is missing or its signatures don't match, the
+    plugin degrades to a no-op and logs a warning (see ``patches.apply_patches``).
     """
     from .patches import apply_patches
 
+    _register_bundled_skill(ctx)
     try:
         active = apply_patches()
     except Exception:  # pragma: no cover - defensive; must never break startup
