@@ -47,6 +47,29 @@ def _neutral_credentials_kwargs() -> dict:
     return {}
 
 
+def _patch_client_ctor(recorder):
+    """Patch every known OpenAI client construction site (old/new hosts).
+
+    Older hosts build subagent clients via ``run_agent.OpenAI``; newer ones
+    go through ``agent.process_bootstrap.OpenAI`` (a lazy proxy the host
+    resolves at call time precisely so tests can patch it). Patch whichever
+    sites exist and return their names; fail loudly when none do, so the
+    test cannot silently pass without intercepting anything.
+    """
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    patched = []
+    for target in ("agent.process_bootstrap.OpenAI", "run_agent.OpenAI"):
+        try:
+            stack.enter_context(patch(target, side_effect=recorder))
+        except (AttributeError, ImportError, ModuleNotFoundError):
+            continue
+        patched.append(target)
+    assert patched, "no known OpenAI client construction site to intercept"
+    return stack
+
+
 def _fake_switch_model(*, raw_input, **kwargs):
     """Stand in for the host /model resolver: map the requested model to a bundle."""
     route = _ROUTES.get((raw_input or "").strip())
@@ -111,7 +134,7 @@ def test_per_task_model_provider_reaches_the_client():
     with patch("hermes_cli.model_switch.switch_model", side_effect=_fake_switch_model), patch(
         "hermes_cli.model_switch.parse_model_flags",
         side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
-    ), patch("run_agent.OpenAI", side_effect=_recording_openai), patch.object(
+    ), _patch_client_ctor(_recording_openai), patch.object(
         run_agent.AIAgent, "_build_system_prompt", return_value="You are a test agent"
     ):
         parent = run_agent.AIAgent(
@@ -157,7 +180,6 @@ def test_per_task_model_provider_reaches_the_client():
 def test_per_task_reasoning_effort_reaches_the_request_boundary():
     neutral_credentials = _neutral_credentials_kwargs()
     assert apply_patches() is True, "plugin should activate on a supported host"
-
     seen: list[dict] = []
     seen_lock = threading.Lock()
 
@@ -180,15 +202,31 @@ def test_per_task_reasoning_effort_reaches_the_request_boundary():
         client.close = MagicMock()
         return client
 
+    # resolve_runtime_provider is faked ONLY for this test's fake
+    # providers; real providers pass through to the host. Newer hosts
+    # consult it during batch credential resolution, so a blanket mock
+    # breaks the batch leg with a missing-key error.
+    try:
+        from hermes_cli import runtime_provider as _runtime_provider_mod
+
+        _real_resolve = _runtime_provider_mod.resolve_runtime_provider
+    except (ImportError, AttributeError):
+        _real_resolve = None
+
+    def _selective_resolve(requested=None, target_model=None, **kwargs):
+        if requested in ("prov-alpha", "prov-beta") or _real_resolve is None:
+            return {"command": None, "args": []}
+        return _real_resolve(
+            requested=requested, target_model=target_model, **kwargs
+        )
+
     with patch("hermes_cli.model_switch.switch_model", side_effect=_fake_switch_model), patch(
         "hermes_cli.model_switch.parse_model_flags",
         side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
     ), patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        return_value={"command": None, "args": []},
-    ), patch(
-        "run_agent.OpenAI", side_effect=_recording_openai
-    ), patch.object(
+        side_effect=_selective_resolve,
+    ), _patch_client_ctor(_recording_openai), patch.object(
         run_agent.AIAgent, "_build_system_prompt", return_value="You are a test agent"
     ), patch.object(
         run_agent.AIAgent, "_supports_reasoning_extra_body", return_value=True
