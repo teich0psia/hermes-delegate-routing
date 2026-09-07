@@ -207,7 +207,8 @@ monkeypatch.
 
 The core cost of this approach is dependence on host internals
 (`delegate_task`, `_build_child_agent`, `_build_dynamic_schema_overrides`,
-`tools.process_registry._format_async_delegation`, `parse_model_flags`,
+the async completion formatter (`tools.process_registry_notifications`, legacy
+`tools.process_registry`), `parse_model_flags`,
 `parse_reasoning_effort`, `_strip_model_hidden_task_fields`). Mitigations:
 
 - **Signature guard** at patch time turns host drift into a safe no-op with a loud
@@ -227,9 +228,10 @@ The core cost of this approach is dependence on host internals
   resolution; registry registration; per-subagent result `model`.
 - `run_agent.py` — `_dispatch_delegate_task` (whitelists args; direct import,
   bypasses registry).
-- `tools/process_registry.py` — `_format_async_delegation` renders the async
-  completion header from batch-level `evt.model`, while each batch result carries
-  the actual child `model` used after per-task routing.
+- `tools/process_registry.py` (legacy location) — `_format_async_delegation`
+  used to render the async completion header from batch-level `evt.model`,
+  while each batch result carries the actual child `model` used after
+  per-task routing.
 - `tools/process_registry_notifications.py` — the formatter moved here
   (module added in `d4cec15b47`; old re-export removed in `707161e77b`);
   `format_process_notification` reaches it by module-global lookup, so the

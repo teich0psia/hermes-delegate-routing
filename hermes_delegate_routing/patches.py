@@ -455,7 +455,12 @@ def _patch_async_formatter() -> bool:
     for mod_name in _ASYNC_FORMATTER_CANDIDATES:
         try:
             module = importlib.import_module(mod_name)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "delegate-routing: async formatter candidate %s unavailable: %s",
+                mod_name,
+                exc,
+            )
             continue
         current = getattr(module, "_format_async_delegation", None)
         if not callable(current):
