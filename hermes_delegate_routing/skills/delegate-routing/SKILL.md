@@ -49,10 +49,27 @@ reads routing fields from `tasks[i]` only.
   `delegation.model`. Specifying only one field can route to an unintended pair.
 - Preserve model identifiers literally. Do not turn a display name into
   `provider/model` syntax or another guessed alias; use the separate
-  `provider` field instead. When the user names a model, use that exact
-  string; when they mean the active route, use the current system runtime
-  metadata. Unresolvable values fail the whole call (fail-closed) — they never
-  silently fall back to another model.
+  `provider` field instead. Unresolvable values fail the whole call
+  (fail-closed) — they never silently fall back to another model.
+
+## Resolving an ambiguous model name
+
+A user-given name ("Deepseek v4 flash") is not yet a literal. Resolve it in
+this order — stop at the first hit, never read provider internals:
+
+1. Current session runtime metadata (the active model/provider pair) —
+   zero extra calls when the user means "that same route".
+2. `hermes config get model` / `hermes config get delegation` — one call,
+   exact configured IDs.
+3. The model picker (`hermes model`) or provider's live `/v1/models` list —
+   one lookup, exact ID match only.
+
+Do not read provider plugin sources, `auth` dumps, or catalog JSON beyond
+step 3. One lookup miss means the name is unknown: offer at most two
+candidate literals as a two-choice question instead of demanding a raw
+literal, and never fire `delegate_task` on a guess. `reasoning_effort` needs
+no resolution — omission inherits, so leave it out unless the user asked for
+a level.
 - `reasoning_effort` is optional and uses the Hermes-supported level
   vocabulary: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or
   `ultra` (depending on the host version).
