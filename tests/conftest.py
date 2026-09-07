@@ -144,15 +144,23 @@ def _restore_host_delegate_state():
     except Exception:
         entry = None
 
-    process_registry = None
-    saved_async_formatter = None
+    _MISSING = object()
+    formatters = []  # (module, saved attr or _MISSING when absent)
     try:
         import importlib
 
-        process_registry = importlib.import_module("tools.process_registry")
-        saved_async_formatter = getattr(process_registry, "_format_async_delegation", None)
+        from hermes_delegate_routing.patches import _ASYNC_FORMATTER_CANDIDATES
+
+        for _mod_name in _ASYNC_FORMATTER_CANDIDATES:
+            try:
+                _module = importlib.import_module(_mod_name)
+            except Exception:
+                continue
+            formatters.append(
+                (_module, getattr(_module, "_format_async_delegation", _MISSING))
+            )
     except Exception:
-        process_registry = None
+        formatters = []
 
     try:
         yield
@@ -165,5 +173,8 @@ def _restore_host_delegate_state():
             del dt._HDR_PATCHED
         if entry is not None:
             entry.dynamic_schema_overrides = saved_schema
-        if process_registry is not None and saved_async_formatter is not None:
-            vars(process_registry)["_format_async_delegation"] = saved_async_formatter
+        for _module, _saved in formatters:
+            if _saved is _MISSING:
+                vars(_module).pop("_format_async_delegation", None)
+            else:
+                vars(_module)["_format_async_delegation"] = _saved

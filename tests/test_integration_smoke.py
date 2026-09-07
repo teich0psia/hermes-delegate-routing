@@ -41,16 +41,30 @@ def test_apply_patches_against_real_host():
 
 
 def test_async_display_against_real_host():
-    process_registry_mod = pytest.importorskip(
-        "tools.process_registry", reason="no hermes-agent process registry on path"
+    import importlib
+
+    from hermes_delegate_routing.patches import (
+        _ASYNC_FORMATTER_CANDIDATES,
+        apply_patches,
     )
-    from hermes_delegate_routing.patches import apply_patches
 
-    orig_formatter = process_registry_mod._format_async_delegation
+    module = None
+    for mod_name in _ASYNC_FORMATTER_CANDIDATES:
+        try:
+            candidate = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        if callable(getattr(candidate, "_format_async_delegation", None)):
+            module = candidate
+            break
+    if module is None:
+        pytest.skip("no hermes-agent async formatter on path")
+
+    orig_formatter = module._format_async_delegation
     assert apply_patches() is True
-    assert process_registry_mod._format_async_delegation is not orig_formatter
+    assert module._format_async_delegation is not orig_formatter
 
-    rendered = process_registry_mod._format_async_delegation(
+    rendered = module._format_async_delegation(
         {
             "delegation_id": "smoke",
             "is_batch": True,

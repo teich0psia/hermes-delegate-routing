@@ -359,6 +359,7 @@ def _preimport_host() -> None:
     for _mod in (
         "tools.registry",
         "tools.process_registry",
+        "tools.process_registry_notifications",
         "model_tools",
         "hermes_cli.config",
     ):
@@ -440,10 +441,13 @@ def _patch_async_formatter() -> bool:
     ``tools.process_registry_notifications`` (both expose
     ``_format_async_delegation(evt)`` with a ``Role: `` preamble line the
     display wrapper keys on). Every location holding a callable,
-    unmarked formatter is wrapped: module-attribute rebinding cannot
-    double-fire through already-bound names, and each wrapper is
-    idempotent on an already-corrected event, so patching several live
-    locations stays safe. Returns True when at least one seam is active.
+    unmarked formatter is wrapped. Patching several locations is safe
+    against the observed host migration: module-attribute rebinding does
+    not re-fire through already-bound names, and the migration kept a
+    plain alias rather than a dynamic forward, so no event passes two
+    wrappers. (A host that dynamically forwarded one location into
+    another could duplicate the mapping line; none observed.)
+    Returns True when at least one seam is active.
     """
     import importlib
 

@@ -101,6 +101,7 @@ Verified against upstream [`NousResearch/hermes-agent`](https://github.com/NousR
 | hermes-agent | Status |
 |---|---|
 | `0.21.0` (checkout `63279301`, tested 2026-09-07) | ✅ verified — current schema/signatures, request-boundary routing, main-profile natural-language delegation, and async actual-model display E2E |
+| `0.21.0` (checkout `693641aa`, tested 2026-09-07) | ✅ verified — routing seams unchanged; async display follows the formatter move to `process_registry_notifications` (live `Model: per-task` mapping confirmed) |
 | `0.19.0` (tag [`v2026.7.20`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20)) | ✅ verified — routing/signature/schema/reasoning compatibility; async display fix degrades safely if host formatter differs |
 | `0.18.0` (tag `v2026.7.1`) | ✅ verified — routing/signature/schema/reasoning compatibility; host supports efforts through `xhigh` |
 

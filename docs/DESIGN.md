@@ -230,8 +230,8 @@ The core cost of this approach is dependence on host internals
 - `tools/process_registry.py` — `_format_async_delegation` renders the async
   completion header from batch-level `evt.model`, while each batch result carries
   the actual child `model` used after per-task routing.
-- `tools/process_registry_notifications.py` (host `693641aa`+) — the formatter
-  moved here; the preamble still emits a `Role: ` line and
+- `tools/process_registry_notifications.py` — the formatter moved here
+  (module added in `d4cec15b47`; old re-export removed in `707161e77b`);
   `format_process_notification` reaches it by module-global lookup, so the
   Seam D wrapper ports unchanged.
 - `agent/agent_runtime_helpers.py`, `agent/tool_executor.py` — `delegate_task`
