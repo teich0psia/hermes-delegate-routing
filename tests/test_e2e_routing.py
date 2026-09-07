@@ -180,7 +180,6 @@ def test_per_task_model_provider_reaches_the_client():
 def test_per_task_reasoning_effort_reaches_the_request_boundary():
     neutral_credentials = _neutral_credentials_kwargs()
     assert apply_patches() is True, "plugin should activate on a supported host"
-
     seen: list[dict] = []
     seen_lock = threading.Lock()
 
@@ -203,12 +202,30 @@ def test_per_task_reasoning_effort_reaches_the_request_boundary():
         client.close = MagicMock()
         return client
 
+    # resolve_runtime_provider is faked ONLY for this test's fake
+    # providers; real providers pass through to the host. Newer hosts
+    # consult it during batch credential resolution, so a blanket mock
+    # breaks the batch leg with a missing-key error.
+    try:
+        from hermes_cli import runtime_provider as _runtime_provider_mod
+
+        _real_resolve = _runtime_provider_mod.resolve_runtime_provider
+    except (ImportError, AttributeError):
+        _real_resolve = None
+
+    def _selective_resolve(requested=None, target_model=None, **kwargs):
+        if requested in ("prov-alpha", "prov-beta") or _real_resolve is None:
+            return {"command": None, "args": []}
+        return _real_resolve(
+            requested=requested, target_model=target_model, **kwargs
+        )
+
     with patch("hermes_cli.model_switch.switch_model", side_effect=_fake_switch_model), patch(
         "hermes_cli.model_switch.parse_model_flags",
         side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
     ), patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        return_value={"command": None, "args": []},
+        side_effect=_selective_resolve,
     ), _patch_client_ctor(_recording_openai), patch.object(
         run_agent.AIAgent, "_build_system_prompt", return_value="You are a test agent"
     ), patch.object(
