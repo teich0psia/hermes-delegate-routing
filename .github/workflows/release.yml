@@ -1,8 +1,14 @@
 name: release
 
-# Publishes to PyPI via Trusted Publishing (OIDC) when a version tag is pushed.
-# No API token is stored — PyPI must have a "pending publisher" configured for
-# this repo/workflow/environment (see README / one-time setup).
+# Validates the release build when a version tag is pushed.
+#
+# NOTE: the PyPI publish job was intentionally removed (2026-09-07). The
+# `hermes-delegate-routing` PyPI name belongs to the upstream fork's 0.1.x
+# line, so this fork cannot publish under the same name, and no Trusted
+# Publishing identity is configured. Releases are distributed as GitHub
+# Releases with attached sdist/wheel artifacts (see `gh release create`).
+# If PyPI distribution is ever wanted, it needs a new distribution name
+# plus a pending-publisher setup — that is a separate, deliberate step.
 on:
   push:
     tags:
@@ -25,19 +31,3 @@ jobs:
         with:
           name: dist
           path: dist/
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/hermes-delegate-routing
-    permissions:
-      id-token: write  # required for Trusted Publishing (OIDC)
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
