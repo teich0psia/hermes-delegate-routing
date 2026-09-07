@@ -21,7 +21,9 @@ and rationale: [`docs/DESIGN.md`](docs/DESIGN.md).
 Install into the **same environment** as your hermes-agent, then enable it.
 
 ```bash
-pip install hermes-delegate-routing
+pip install "git+https://github.com/teich0psia/hermes-delegate-routing.git@main"
+# or pin a release (see the Releases page for tags):
+# pip install "git+https://github.com/teich0psia/hermes-delegate-routing.git@vX.Y.Z"
 # or, for development from a checkout:
 pip install -e /path/to/hermes-delegate-routing
 ```
