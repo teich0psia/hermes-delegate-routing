@@ -71,6 +71,15 @@ delegate_task(tasks=[{"goal": "…", "model": "sonnet", "provider": "anthropic",
 the host drops top-level args before the tool runs, so only `tasks[]` fields take
 effect. This matches the recommended call shape (see [`docs/DESIGN.md`](docs/DESIGN.md)).
 
+## Recovery skill
+
+The package bundles a read-only skill, registered at load as
+`skill_view("delegate_routing:delegate-routing")`. Plugin skills do not enter
+`~/.hermes/skills/` nor `<available_skills>` — they are explicit loads only —
+so this skill is a **recovery target, not a discovery channel**: routing-failure
+errors point at it with a minimal `tasks[]` example, and the per-task schema
+descriptions are self-contained enough to call correctly without it.
+
 ## How it works
 
 `delegate_task` is special-cased in the host runtime

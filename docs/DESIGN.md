@@ -69,6 +69,10 @@ capture seam.
 - **Discovery:** pip entry point group `hermes_agent.plugins`
   (`hermes_cli/plugins.py`); no `plugin.yaml` needed for entry-point plugins.
   Enable via `plugins.enabled` in `config.yaml`; `register(ctx)` runs at load.
+  Since 0.3.0 `register()` also calls `ctx.register_skill("delegate-routing",
+  ...)` to expose the bundled recovery skill as
+  `delegate_routing:delegate-routing` (read-only, namespaced, explicit loads
+  only — a recovery target, not a discovery channel).
 - **Registry override API** (`register(..., override=True)`) can replace a built-in
   tool — but it does **not** intercept `delegate_task` at runtime (§6.1).
 - **Lifecycle hooks** (`pre_tool_call` is veto-only, `transform_tool_result`,
@@ -116,7 +120,10 @@ globals at call time, rebinding those attributes reaches the active call paths.
 - **A — schema.** Wrap the tool's `dynamic_schema_overrides` builder to advertise
   `tasks[].model`, `tasks[].provider`, and `tasks[].reasoning_effort` to the model.
   (Updates the registered `ToolEntry`, since the registry holds a direct reference
-  to the builder.)
+  to the builder.) Since 0.3.0 the field descriptions are self-contained
+  mini-manuals (`tasks[i]`-only, no top-level argument, model-only pinning,
+  literal-exact, fail-closed) — the plugin skill is a recovery target, not the
+  discovery channel.
 - **B — capture.** Wrap `delegate_task`: for each task with a `model`/`provider`,
   resolve a full route bundle via the host `/model` switch pipeline; for an explicit
   `reasoning_effort`, call Hermes' own `parse_reasoning_effort()`. Stash the combined
@@ -187,7 +194,9 @@ monkeypatch.
 ## 9. Failure modes
 
 - **Unresolvable model/provider/reasoning effort:** default **fail-hard** — the `delegate_task` call
-  returns a tool error naming the bad value. Config toggle
+  returns a tool error naming the bad value, plus a pointer to the bundled
+  recovery skill (`skill_view("delegate_routing:delegate-routing")`) and a
+  minimal `tasks[]` example. Config toggle
   `delegate_routing.on_error: fail | fallback`; `fallback` skips the override (the
   task uses normal batch/config routing) and logs a warning.
 - **Host missing / signature mismatch:** `apply_patches()` validates the target
