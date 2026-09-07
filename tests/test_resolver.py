@@ -34,7 +34,9 @@ def _switch_result(**kw):
 
 
 def test_resolves_model_with_structured_provider():
-    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+    with patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.model_switch.switch_model"
+    ) as mock_switch, patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         return_value={"command": None, "args": []},
     ):
@@ -52,7 +54,9 @@ def test_resolves_model_with_structured_provider():
 
 
 def test_resolves_inline_provider_flag():
-    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+    with patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.model_switch.switch_model"
+    ) as mock_switch, patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         return_value={"command": None, "args": []},
     ):
@@ -103,7 +107,9 @@ def test_tolerates_parse_model_flags_arity_growth():
     with patch(
         "hermes_cli.model_switch.parse_model_flags",
         return_value=("m", "", 0, 0, 0, "future"),
-    ), patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+    ), patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.model_switch.switch_model"
+    ) as mock_switch, patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         return_value={"command": None, "args": []},
     ):
@@ -228,7 +234,9 @@ def test_model_only_preserves_direct_delegation_base_url():
 
 
 def test_preserves_current_host_request_overrides_and_runtime_max_output_tokens():
-    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+    with patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.model_switch.switch_model"
+    ) as mock_switch, patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         return_value={
             "command": None,
@@ -251,7 +259,9 @@ def test_preserves_current_host_request_overrides_and_runtime_max_output_tokens(
 
 
 def test_runtime_request_overrides_are_used_when_switch_result_lacks_field():
-    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.model_switch.switch_model") as mock_switch, patch(
+    with patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.model_switch.switch_model"
+    ) as mock_switch, patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         return_value={
             "command": None,
