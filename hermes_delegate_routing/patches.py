@@ -47,6 +47,14 @@ _EXPECTED_BUILD_CHILD_PARAMS = {
     "override_acp_args", "role",
 }
 
+# Modules that may hold the async completion formatter, newest host first.
+# Hermes moved _format_async_delegation from tools.process_registry to
+# tools.process_registry_notifications; _patch_async_formatter() tries each.
+_ASYNC_FORMATTER_CANDIDATES = (
+    "tools.process_registry_notifications",
+    "tools.process_registry",
+)
+
 
 def _tool_error(msg: str, tool_error=None) -> str:
     """Return a host-shaped tool error string.
@@ -425,33 +433,43 @@ def _patch_schema(dt) -> None:
 
 
 def _patch_async_formatter() -> bool:
-    """Seam D — correct stale batch-level model metadata in async notices."""
-    try:
-        import importlib
+    """Seam D — correct stale batch-level model metadata in async notices.
 
-        process_registry = importlib.import_module("tools.process_registry")
-    except Exception as exc:
+    Tries each known formatter location, newest host first. Hermes moved
+    the async completion formatter from ``tools.process_registry`` to
+    ``tools.process_registry_notifications`` (both expose
+    ``_format_async_delegation(evt)`` with a ``Role: `` preamble line the
+    display wrapper keys on). Every location holding a callable,
+    unmarked formatter is wrapped: module-attribute rebinding cannot
+    double-fire through already-bound names, and each wrapper is
+    idempotent on an already-corrected event, so patching several live
+    locations stays safe. Returns True when at least one seam is active.
+    """
+    import importlib
+
+    patched_any = False
+    for mod_name in _ASYNC_FORMATTER_CANDIDATES:
+        try:
+            module = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        current = getattr(module, "_format_async_delegation", None)
+        if not callable(current):
+            continue
+        if getattr(current, "_hdr_delegate_routing_display", False):
+            patched_any = True
+            continue
+        wrapped = make_async_formatter_wrapper(current)
+        wrapped.__dict__["_hdr_delegate_routing_display"] = True
+        vars(module)["_format_async_delegation"] = wrapped
+        logger.debug("delegate-routing: patched %s display", mod_name)
+        patched_any = True
+    if not patched_any:
         logger.warning(
             "delegate-routing: async completion formatter unavailable; "
-            "routing remains active but completion notices may show the batch model: %s",
-            exc,
+            "routing remains active but completion notices may show the batch model"
         )
-        return False
-
-    current = getattr(process_registry, "_format_async_delegation", None)
-    if not callable(current):
-        logger.warning(
-            "delegate-routing: tools.process_registry._format_async_delegation "
-            "unavailable; async completion model display not patched"
-        )
-        return False
-    if getattr(current, "_hdr_delegate_routing_display", False):
-        return True
-
-    wrapped = make_async_formatter_wrapper(current)
-    wrapped.__dict__["_hdr_delegate_routing_display"] = True
-    vars(process_registry)["_format_async_delegation"] = wrapped
-    return True
+    return patched_any
 
 
 def apply_patches() -> bool:

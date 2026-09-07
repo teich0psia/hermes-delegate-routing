@@ -212,3 +212,58 @@ def test_end_to_end_routing_through_patched_host(fake_host):
     # task 0 routed, task 1 batch
     assert calls[0] == ("child", 0, "ROUTED", "ROUTEDP")
     assert calls[1] == ("child", 1, "BATCH", "BATCHP")
+
+
+def _notifications_module():
+    """Fake tools.process_registry_notifications (new host location)."""
+    mod = types.ModuleType("tools.process_registry_notifications")
+
+    def _format_async_delegation(evt):
+        return f"Role: {evt.get('role', 'leaf')}   Model: {evt.get('model', '?')}\nRESULT"
+
+    vars(mod)["_format_async_delegation"] = _format_async_delegation
+    return mod
+
+
+def test_async_formatter_patches_new_location_only(fake_host, monkeypatch):
+    """New host: legacy formatter gone, notifications location wrapped."""
+    from hermes_delegate_routing.patches import apply_patches
+
+    fake_host()
+    monkeypatch.setitem(sys.modules, "tools.process_registry", None)
+    new_mod = _notifications_module()
+    monkeypatch.setitem(
+        sys.modules, "tools.process_registry_notifications", new_mod
+    )
+    orig = new_mod._format_async_delegation
+
+    assert apply_patches() is True
+    assert new_mod._format_async_delegation is not orig
+
+    evt = {
+        "role": "leaf",
+        "model": "batch-default",
+        "results": [{"task_index": 0, "model": "gpt-5.6-sol"}],
+    }
+    assert "Model: gpt-5.6-sol" in new_mod._format_async_delegation(evt)
+
+
+def test_async_formatter_patches_both_locations(fake_host, monkeypatch):
+    """Transitional host: every live formatter location is wrapped once."""
+    from hermes_delegate_routing.patches import apply_patches
+
+    _, _, process_mod = fake_host()
+    new_mod = _notifications_module()
+    monkeypatch.setitem(
+        sys.modules, "tools.process_registry_notifications", new_mod
+    )
+    orig_old = process_mod._format_async_delegation
+    orig_new = new_mod._format_async_delegation
+
+    assert apply_patches() is True
+    assert process_mod._format_async_delegation is not orig_old
+    assert new_mod._format_async_delegation is not orig_new
+
+    assert apply_patches() is True  # second pass: marked, not re-wrapped
+    assert process_mod._format_async_delegation is not orig_old
+    assert new_mod._format_async_delegation is not orig_new

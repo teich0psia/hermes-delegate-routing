@@ -130,7 +130,9 @@ globals at call time, rebinding those attributes reaches the active call paths.
   Hermes constructs the child normally, apply an explicit task `reasoning_effort`
   to `child.reasoning_config`. Tasks with no override pass through unchanged. This
   keeps provider-specific reasoning translation in Hermes' normal transports.
-- **D — async display.** Wrap `tools.process_registry._format_async_delegation`.
+- **D — async display.** Wrap the completion formatter at each known
+  location, newest first (`tools.process_registry_notifications`, then the
+  legacy `tools.process_registry`).
   Hermes' async batch event keeps the batch/default model captured before seam C,
   but each completed result contains the actual child `model`. The wrapper shallow-
   copies only the display event, replaces the header model from `results[].model`,
@@ -228,6 +230,10 @@ The core cost of this approach is dependence on host internals
 - `tools/process_registry.py` — `_format_async_delegation` renders the async
   completion header from batch-level `evt.model`, while each batch result carries
   the actual child `model` used after per-task routing.
+- `tools/process_registry_notifications.py` (host `693641aa`+) — the formatter
+  moved here; the preamble still emits a `Role: ` line and
+  `format_process_notification` reaches it by module-global lookup, so the
+  Seam D wrapper ports unchanged.
 - `agent/agent_runtime_helpers.py`, `agent/tool_executor.py` — `delegate_task`
   special-case dispatch.
 - `tools/registry.py` — `register(override=True)` + plugin override policy;

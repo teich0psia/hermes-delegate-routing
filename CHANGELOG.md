@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.4 — 2026-09-07
+
+### Fixed
+
+- Seam D (async display) follows the formatter move: newer hosts render
+  delegation completions from `tools.process_registry_notifications`
+  instead of `tools.process_registry`. The patch now tries each known
+  location (newest first) and wraps every live one, so heterogeneous
+  fan-out again reports `Model: per-task` with the task-to-model mapping
+  instead of the stale batch model. Display still degrades loudly and
+  independently when no known formatter exists.
+
 ## 0.2.3 — 2026-09-07
 
 ### Fixed
