@@ -7,10 +7,12 @@
 - Bundled recovery skill (`hermes_delegate_routing/skills/delegate-routing/`):
   `register()` now calls `ctx.register_skill("delegate-routing", ...)` so the
   skill is loadable as `skill_view("delegate_routing:delegate-routing")`.
-  Plugin skills are read-only and namespaced — they do not enter
-  `~/.hermes/skills/` nor `<available_skills>` — so this is a recovery target,
-  not a discovery channel. Registration is best-effort and never breaks
-  startup (`ctx=None` or missing `register_skill` is a safe no-op).
+  Plugin skills are read-only and namespaced — explicit loads only, not part
+  of the system prompt's `<available_skills>` index (though the host currently
+  surfaces plugin-skill metadata via `skills_list`) — so this is a recovery
+  target, not the discovery channel. Registration is best-effort and never
+  breaks startup (`ctx=None` or missing `register_skill` is a safe no-op, and
+  `ctx.on_unload(restore_patches)` unwinds the monkeypatches on unload).
 - Fail-closed routing errors now point at the bundled skill and include a
   minimal `tasks[]` JSON example, so a bad literal is recoverable in one step.
 - Seam A schema descriptions are now self-contained mini-manuals: routing

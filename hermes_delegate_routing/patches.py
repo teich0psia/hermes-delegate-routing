@@ -19,12 +19,36 @@ import copy
 import inspect
 import json
 import logging
+import re
 import threading
 
 from ._state import ROUTING, get_creds
 from .resolver import resolve_model_provider_override
 
 logger = logging.getLogger(__name__)
+
+# Secret-shaped fragments that must never echo back in tool errors or logs.
+# Model/provider literals are user-controlled; the host exception may carry a
+# custom provider URL or credential-resolver detail. Keep only a redacted hint.
+_REDACT_PATTERNS = (
+    re.compile(r"(api[_-]?key\s*[:=]\s*)(['\"]?)[^\s'\",;}]+", re.IGNORECASE),
+    re.compile(r"(authorization\s*[:=]\s*)(['\"]?)[^\s'\",;}]+", re.IGNORECASE),
+    re.compile(r"([?&](?:key|token|secret|signature|sig|auth)[^=]*=)[^&\s'\",;}]+", re.IGNORECASE),
+)
+
+
+def _redact(text: str) -> str:
+    """Replace secret-shaped fragments with [REDACTED]; never raises."""
+    try:
+        out = str(text)
+    except Exception:
+        return "[unprintable]"
+    for pat in _REDACT_PATTERNS:
+        try:
+            out = pat.sub(r"\1[REDACTED]", out)
+        except Exception:
+            continue
+    return out[:2000]
 
 # Serializes apply_patches() so a concurrent second caller can't pass the
 # _HDR_PATCHED check before the first sets it (which would double-wrap).
@@ -34,6 +58,11 @@ logger = logging.getLogger(__name__)
 # plain Lock would deadlock there; with an RLock the nested pass proceeds and
 # the sentinel re-check below keeps patching single (see _preimport_host()).
 _PATCH_LOCK = threading.RLock()
+
+# True only when the bundled recovery skill registered live in this process.
+# The fail-closed error pointer names the skill; when False, the pointer is
+# downgraded to the schema guidance so we never advertise a dead target.
+SKILL_LIVE = False
 
 # Host function parameters we depend on. If a future hermes-agent drops/renames
 # any of these, apply_patches() refuses to patch rather than half-wrap.
@@ -79,34 +108,53 @@ _SKILL_HINT = (
     f" See skill '{_SKILL_REF}' via skill_view (per-task routing lives inside "
     "tasks[i] only; there is no top-level model/provider/reasoning_effort argument)."
 )
+_SKILL_FALLBACK_HINT = (
+    " (bundled recovery skill not registered in this process — per-task routing "
+    "lives inside tasks[i] only; there is no top-level model/provider/reasoning_effort "
+    "argument)."
+)
 _MINIMAL_EXAMPLE = (
-    '{"tasks": [{"goal": "...", "model": "<exact /model name>", '
+    '{"tasks": [{"goal": "...", "model": "<exact model ID after /model>", '
     '"provider": "<exact provider id>"}]}'
 )
 
+
+def _skill_pointer() -> str:
+    """Recovery pointer: skill URI when live, schema guidance otherwise."""
+    if SKILL_LIVE:
+        return _SKILL_HINT
+    return _SKILL_FALLBACK_HINT
+
 _TASK_MODEL_DESC = (
     "Per-task model for THIS child only — set inside tasks[i]; there is no "
-    "top-level model argument (dropped before the tool runs). Accepts a /model "
-    "name or alias (e.g. 'sonnet', 'gemini-flash-2.0'), optionally with an "
-    "inline '--provider <id>'. Do NOT use provider:model syntax; set the separate "
-    "'provider' field instead. A model-only task stays on the inherited "
-    "delegation/parent provider — set both model and provider to cross providers. "
-    "Use the exact literal; unresolvable values fail the whole call (fail-closed). "
-    "When omitted, the child inherits the batch/config model."
+    "top-level model argument (dropped before the tool runs). Accepts a model "
+    "ID or alias as used after /model (e.g. 'sonnet', 'gemini-flash-2.0'; do "
+    "not include '/model' itself), optionally with an inline '--provider <id>' "
+    "(which then counts as an explicit provider). Do NOT use provider:model "
+    "syntax; set the separate 'provider' field instead. A model-only task "
+    "(no explicit provider anywhere) stays on the inherited delegation/parent "
+    "provider — set both model and provider to cross providers. Use the exact "
+    "literal; under the default on_error=fail, unresolvable values fail the "
+    "whole call instead of silently running another model (on_error=fallback "
+    "skips just that override). When omitted, the child inherits the "
+    "batch/config model."
 )
 _TASK_PROVIDER_DESC = (
     "Per-task provider id for THIS child only — set inside tasks[i]; there is no "
     "top-level provider argument. Must be an exact configured provider id; "
-    "unresolvable values fail the whole call (fail-closed). A provider-only task "
-    "reuses the inherited delegation/parent model. Prefer this structured field over "
-    "embedding '--provider' in 'model' for JSON tool calls."
+    "under the default on_error=fail, unresolvable values fail the whole call "
+    "instead of silently running another provider (on_error=fallback skips "
+    "just that override). A provider-only task reuses the inherited "
+    "delegation/parent model. Prefer this structured field over embedding "
+    "'--provider' in 'model' for JSON tool calls."
 )
 _TASK_REASONING_DESC = (
     "Per-task reasoning effort for THIS child only — set inside tasks[i]. Uses the "
     "same values as Hermes reasoning_effort (for example 'none', 'minimal', 'low', "
     "'medium', 'high', 'xhigh', 'max', or 'ultra', depending on the host version). "
-    "When omitted, normal delegation.reasoning_effort > parent-agent inheritance "
-    "is preserved."
+    "Unsupported values fail the whole call under on_error=fail (skipped under "
+    "fallback). When omitted, normal delegation.reasoning_effort > parent-agent "
+    "inheritance is preserved."
 )
 
 
@@ -116,6 +164,12 @@ def make_schema_override(orig_builder):
     Deep-copies the original output before injecting because the host builder only
     shallow-copies each property, leaving ``tasks.items`` aliased to the static
     schema — mutating it in place would corrupt the host's schema (DESIGN §6).
+
+    Merge policy for pre-existing fields: when the host (or another plugin)
+    already defines ``model`` / ``provider`` / ``reasoning_effort`` on the task
+    schema, the existing definition wins for ``type``/``enum`` — we only fill a
+    missing ``description`` with ours. This keeps forward-compat with a future
+    host that ships native per-task routing instead of clobbering it.
     """
 
     def _wrapped(*args, **kwargs):
@@ -131,14 +185,19 @@ def make_schema_override(orig_builder):
                 "not advertising per-task routing fields"
             )
             return result
-        props.setdefault("model", {"type": "string", "description": _TASK_MODEL_DESC})
-        props.setdefault("provider", {"type": "string", "description": _TASK_PROVIDER_DESC})
-        props.setdefault(
-            "reasoning_effort",
-            {"type": "string", "description": _TASK_REASONING_DESC},
-        )
+        for _name, _desc in (
+            ("model", _TASK_MODEL_DESC),
+            ("provider", _TASK_PROVIDER_DESC),
+            ("reasoning_effort", _TASK_REASONING_DESC),
+        ):
+            _existing = props.get(_name)
+            if _existing is None:
+                props[_name] = {"type": "string", "description": _desc}
+            elif isinstance(_existing, dict) and not _existing.get("description"):
+                _existing["description"] = _desc
         return result
 
+    _wrapped.__dict__["_hdr_delegate_routing_schema"] = True
     return _wrapped
 
 
@@ -149,11 +208,11 @@ def _resolve_reasoning_override(value):
     try:
         from hermes_constants import parse_reasoning_effort
     except Exception as exc:  # pragma: no cover - host import guard
-        raise ValueError(f"Cannot import Hermes reasoning parser: {exc}") from exc
+        raise ValueError(f"Cannot import Hermes reasoning parser: {_redact(exc)}") from exc
 
     parsed = parse_reasoning_effort(value)
     if parsed is None:
-        raise ValueError(f"Unsupported reasoning_effort {value!r}")
+        raise ValueError(f"Unsupported reasoning_effort {_redact(value)!r}")
     return dict(parsed)
 
 
@@ -202,14 +261,14 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                             "delegate-routing: task %d override "
                             "(model=%r provider=%r reasoning_effort=%r) failed to resolve; "
                             "using batch/config routing: %s",
-                            i, model, provider, reasoning_effort, exc,
+                            i, model, provider, reasoning_effort, _redact(exc),
                         )
                         continue
                     return _tool_error(
                         "delegate_task routing: could not resolve task override "
                         f"for task {i} (model={model!r}, provider={provider!r}, "
-                        f"reasoning_effort={reasoning_effort!r}): {exc}."
-                        f"{_SKILL_HINT} Example: {_MINIMAL_EXAMPLE}",
+                        f"reasoning_effort={reasoning_effort!r}): {_redact(exc)}."
+                        f"{_skill_pointer()} Example: {_MINIMAL_EXAMPLE}",
                         tool_error,
                     )
         token = ROUTING.set(routing)
@@ -222,6 +281,7 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
         finally:
             ROUTING.reset(token)
 
+    _wrapped.__dict__["_hdr_delegate_routing_capture"] = True
     return _wrapped
 
 
@@ -286,6 +346,7 @@ def make_build_child_wrapper(orig_build_child):
             child.reasoning_config = dict(creds["reasoning_config"])
         return child
 
+    _wrapped.__dict__["_hdr_delegate_routing_apply"] = True
     return _wrapped
 
 
@@ -401,14 +462,30 @@ def _invalidate_tool_defs_cache(registry) -> None:
     below are private host internals; each is best-effort and guarded so a
     future host that renames them just degrades to no invalidation.
     """
+    _lock = getattr(registry, "_lock", None)
+    _acquire = getattr(_lock, "acquire", None)
+    _release = getattr(_lock, "release", None)
+    _use_lock = _lock is not None and callable(_acquire) and callable(_release)
+    if _use_lock:
+        try:
+            _acquire()  # type: ignore[misc]
+        except Exception:
+            _use_lock = False
     try:
-        registry._generation += 1
-    except Exception:  # pragma: no cover - defensive; private attr may move
-        logger.warning(
-            "delegate-routing: could not bump registry._generation; a warm "
-            "tool-definitions cache may keep serving the stock schema until "
-            "the next registry mutation"
-        )
+        try:
+            registry._generation += 1
+        except Exception:  # pragma: no cover - defensive; private attr may move
+            logger.warning(
+                "delegate-routing: could not bump registry._generation; a warm "
+                "tool-definitions cache may keep serving the stock schema until "
+                "the next registry mutation"
+            )
+    finally:
+        if _use_lock:
+            try:
+                _release()  # type: ignore[misc]
+            except Exception:
+                pass
     try:
         from model_tools import _clear_tool_defs_cache
 
@@ -500,6 +577,89 @@ def _patch_async_formatter() -> bool:
     return patched_any
 
 
+_RESTORE_STATE: dict = {}
+
+
+def _snapshot_for_restore(dt, registry_entry) -> None:
+    """Record pre-patch originals so restore_patches() can unwind exactly once."""
+    if _RESTORE_STATE.get("taken"):
+        return
+    _RESTORE_STATE.update(
+        {
+            "taken": True,
+            "delegate_task": dt.delegate_task,
+            "build_child": dt._build_child_agent,
+            "schema_builder": getattr(registry_entry, "dynamic_schema_overrides", None)
+            if registry_entry is not None
+            else None,
+            "entry": registry_entry,
+            "formatters": [],
+        }
+    )
+    import importlib
+
+    for _mod_name in _ASYNC_FORMATTER_CANDIDATES:
+        try:
+            _module = importlib.import_module(_mod_name)
+        except Exception:
+            continue
+        try:
+            _current = vars(_module).get("_format_async_delegation")
+        except Exception:
+            continue
+        _RESTORE_STATE["formatters"].append((_module, _current))
+
+
+def restore_patches() -> None:
+    """Best-effort unload: restore pre-patch originals (identity-checked).
+
+    Registered via ``ctx.on_unload`` when the host supports it. Rebinding only
+    when the current attribute is still ours keeps a foreign re-patch (or a
+    second plugin generation) from being clobbered. Never raises.
+    """
+    try:
+        import tools.delegate_tool as dt
+    except Exception:
+        return
+    if not _RESTORE_STATE.get("taken"):
+        return
+    try:
+        if getattr(dt.delegate_task, "_hdr_delegate_routing_capture", False):
+            dt.delegate_task = _RESTORE_STATE["delegate_task"]
+        if getattr(dt._build_child_agent, "_hdr_delegate_routing_apply", False):
+            dt._build_child_agent = _RESTORE_STATE["build_child"]
+        _entry = _RESTORE_STATE.get("entry")
+        if _entry is not None:
+            _current_builder = getattr(_entry, "dynamic_schema_overrides", None)
+            if getattr(_current_builder, "_hdr_delegate_routing_schema", False):
+                _entry.dynamic_schema_overrides = _RESTORE_STATE["schema_builder"]
+                try:
+                    from tools.registry import registry as _registry
+
+                    _invalidate_tool_defs_cache(_registry)
+                except Exception:
+                    pass
+        for _module, _original in _RESTORE_STATE.get("formatters", []):
+            try:
+                _current = vars(_module).get("_format_async_delegation")
+            except Exception:
+                continue
+            if getattr(_current, "_hdr_delegate_routing_display", False):
+                if _original is None:
+                    vars(_module).pop("_format_async_delegation", None)
+                else:
+                    vars(_module)["_format_async_delegation"] = _original
+        try:
+            if getattr(dt, "_HDR_PATCHED", False):
+                dt._HDR_PATCHED = False
+        except Exception:
+            pass
+    except Exception:
+        logger.debug("hermes-delegate-routing: restore failed", exc_info=True)
+    finally:
+        _RESTORE_STATE.clear()
+
+
 def apply_patches() -> bool:
     """Install the four seams on the host, once. Returns True if routing is active.
 
@@ -548,14 +708,31 @@ def apply_patches() -> bool:
         on_error = _read_on_error()
         tool_error = getattr(dt, "tool_error", None)
 
+        # Snapshot BEFORE mutating so a mid-install failure (or a later unload)
+        # can restore the exact originals. _patch_schema needs the live entry.
+        try:
+            from tools.registry import registry as _live_registry
+
+            _live_entry = _live_registry.get_entry("delegate_task")
+        except Exception:
+            _live_entry = None
+        _snapshot_for_restore(dt, _live_entry)
+
         # Seam B (capture) and Seam C (apply) via module-attribute rebind. Both
         # call sites resolve these as module globals at call time, so this reaches
         # every path including run_agent._dispatch_delegate_task (DESIGN §6.1).
-        dt.delegate_task = make_delegate_task_wrapper(
-            dt.delegate_task, resolve_model_provider_override,
-            on_error=on_error, tool_error=tool_error,
-        )
-        dt._build_child_agent = make_build_child_wrapper(dt._build_child_agent)
+        try:
+            dt.delegate_task = make_delegate_task_wrapper(
+                dt.delegate_task, resolve_model_provider_override,
+                on_error=on_error, tool_error=tool_error,
+            )
+            dt._build_child_agent = make_build_child_wrapper(dt._build_child_agent)
+        except Exception as exc:
+            logger.warning(
+                "delegate-routing: seam B/C install failed — restoring originals: %s", exc
+            )
+            restore_patches()
+            return False
 
         # Seam A (schema) via the ToolEntry.
         _patch_schema(dt)

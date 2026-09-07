@@ -37,45 +37,79 @@ logger = logging.getLogger(__name__)
 
 _SKILL_DIRNAME = "delegate-routing"
 _SKILL_FILENAME = "SKILL.md"
+_SKILL_DESCRIPTION = "Use when routing a Hermes subagent by model/provider."
 
 
-def _register_bundled_skill(ctx) -> None:
-    """Register the bundled recovery skill (best-effort, never fatal).
+def _skill_md_path() -> Path:
+    return Path(__file__).parent / "skills" / _SKILL_DIRNAME / _SKILL_FILENAME
 
-    Plugin skills are read-only and namespaced (``delegate_routing:delegate-routing``);
-    they do not enter ``~/.hermes/skills/`` nor ``<available_skills>``. The skill
-    exists so the routing-failure error pointer always has a live target.
+
+def _register_bundled_skill(ctx) -> bool:
+    """Register the bundled recovery skill. Returns True when live.
+
+    Plugin skills are read-only and namespaced
+    (``delegate_routing:delegate-routing``); they are explicit loads only, not
+    part of the system prompt's ``<available_skills>`` index (though the host
+    currently surfaces plugin-skill metadata via ``skills_list``). Never
+    raises: ``ctx=None``, a missing ``register_skill`` attribute, a missing
+    SKILL.md, or a registration error all degrade to ``False``.
     """
-    if ctx is None or not hasattr(ctx, "register_skill"):
-        return
-    skill_md = Path(__file__).parent / "skills" / _SKILL_DIRNAME / _SKILL_FILENAME
-    if not skill_md.exists():
-        logger.debug("hermes-delegate-routing: bundled skill missing at %s", skill_md)
-        return
     try:
-        ctx.register_skill(_SKILL_DIRNAME, skill_md)
+        if ctx is None or not hasattr(ctx, "register_skill"):
+            return False
+        skill_md = _skill_md_path()
+        if not skill_md.exists():
+            logger.debug("hermes-delegate-routing: bundled skill missing at %s", skill_md)
+            return False
+        try:
+            frontmatter = {"version": __version__}
+            ctx.register_skill(_SKILL_DIRNAME, skill_md, _SKILL_DESCRIPTION, frontmatter)
+        except TypeError:
+            # Older hosts accept only (name, path).
+            ctx.register_skill(_SKILL_DIRNAME, skill_md)
+        return True
     except Exception:  # pragma: no cover - registration must never break startup
         logger.debug("hermes-delegate-routing: bundled skill registration failed", exc_info=True)
+        return False
 
 
 def register(ctx=None) -> None:
     """Plugin entry point — called once at startup by the Hermes plugin loader.
 
     Installs the four monkeypatch seams (schema, capture, apply, async display)
-    plus the bundled recovery skill. Safe to call without a live ``ctx``.
-    Never raises: if the host is missing or its signatures don't match, the
-    plugin degrades to a no-op and logs a warning (see ``patches.apply_patches``).
+    plus the bundled recovery skill. Never raises: every step is guarded, and a
+    missing host or mismatched signatures degrade to a no-op with a warning
+    (see ``patches.apply_patches``).
     """
-    from .patches import apply_patches
-
-    _register_bundled_skill(ctx)
     try:
+        skill_live = _register_bundled_skill(ctx)
+        if hasattr(ctx, "on_unload") and callable(getattr(ctx, "on_unload", None)):
+            try:
+                from .patches import restore_patches
+
+                ctx.on_unload(restore_patches)
+            except Exception:
+                logger.debug(
+                    "hermes-delegate-routing: on_unload hook registration failed",
+                    exc_info=True,
+                )
+        from . import patches as _patches
+        from .patches import apply_patches
+
+        _patches.SKILL_LIVE = bool(skill_live)
         active = apply_patches()
     except Exception:  # pragma: no cover - defensive; must never break startup
         logger.exception("hermes-delegate-routing: unexpected error during patch")
         return
     if active:
-        logger.info("hermes-delegate-routing v%s active", __version__)
+        if not skill_live:
+            logger.warning(
+                "hermes-delegate-routing v%s active but bundled skill not "
+                "registered — routing-error skill pointers may be stale",
+                __version__,
+            )
+        else:
+            logger.info("hermes-delegate-routing v%s active", __version__)
     else:
         logger.warning(
             "hermes-delegate-routing v%s loaded but INACTIVE (host unavailable "

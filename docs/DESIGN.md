@@ -72,7 +72,9 @@ capture seam.
   Since 0.3.0 `register()` also calls `ctx.register_skill("delegate-routing",
   ...)` to expose the bundled recovery skill as
   `delegate_routing:delegate-routing` (read-only, namespaced, explicit loads
-  only — a recovery target, not a discovery channel).
+  only — not part of the system prompt's `<available_skills>` index — a
+  recovery target, not the discovery channel), and registers
+  `ctx.on_unload(restore_patches)` to unwind the monkeypatches on unload.
 - **Registry override API** (`register(..., override=True)`) can replace a built-in
   tool — but it does **not** intercept `delegate_task` at runtime (§6.1).
 - **Lifecycle hooks** (`pre_tool_call` is veto-only, `transform_tool_result`,
@@ -209,6 +211,11 @@ monkeypatch.
 - **Double load:** idempotent via a module sentinel guarded by a (re-entrant)
   lock. Host modules are pre-imported before locking so an import-triggered
   loader re-entry completes its own pass instead of deadlocking mid-patch.
+- **Unload:** `register()` hooks `ctx.on_unload(restore_patches)` when the host
+  supports it. Restore rebinds only attributes still carrying our markers
+  (identity-checked), so a foreign re-patch is never clobbered; the snapshot
+  clears after one unwind. A mid-install failure in seam B/C likewise restores
+  before returning `False` — never half-patched.
 - **Concurrency:** the `ContextVar` isolates overlapping `delegate_task` calls; the
   synchronous build loop keeps index→creds stable within a call.
 
