@@ -71,6 +71,17 @@ delegate_task(tasks=[{"goal": "…", "model": "sonnet", "provider": "anthropic",
 the host drops top-level args before the tool runs, so only `tasks[]` fields take
 effect. This matches the recommended call shape (see [`docs/DESIGN.md`](docs/DESIGN.md)).
 
+## Recovery skill
+
+The package bundles a read-only skill, registered at load as
+`skill_view("delegate_routing:delegate-routing")`. Plugin skills are explicit
+loads only — not part of the system prompt's `<available_skills>` index
+(though the host currently surfaces plugin-skill metadata via `skills_list`)
+— so this skill is a **recovery target, not the discovery channel**: routing-failure
+errors point at it with a minimal `tasks[]` example, and the per-task schema
+descriptions are self-contained enough to call correctly without it. Unload
+restores the pre-patch originals via `ctx.on_unload(restore_patches)`.
+
 ## How it works
 
 `delegate_task` is special-cased in the host runtime
