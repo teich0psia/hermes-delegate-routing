@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 logger = logging.getLogger(__name__)
 

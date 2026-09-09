@@ -1,16 +1,23 @@
 """Regression test: apply_patches() must not deadlock on loader re-entry.
 
-On some hosts, importing a host module re-enters the plugin loader
-(model_tools discovers plugins at import time), which calls register()
-→ apply_patches() on the same thread. With a non-re-entrant lock held
-across the seam installs, the nested pass deadlocked. apply_patches()
-now pre-imports host modules before locking (so a nested pass completes
-first and sets the sentinel) and uses an RLock as a backstop.
+On some hosts, importing a host module re-enters the plugin loader, which
+calls register() → apply_patches() on the same thread. With a
+non-re-entrant lock held across the seam installs, the nested pass
+deadlocked. apply_patches() now pre-imports host modules before locking
+(so a nested pass completes first and sets the sentinel) and uses an RLock
+as a backstop.
 
-The test installs a meta-path finder serving a fake ``model_tools``
-whose import side effect runs a nested apply_patches() — simulating the
-loader re-entry — then runs the outer apply_patches() in a worker thread
-with a join timeout so a regression fails instead of hanging the suite.
+The test installs a meta-path finder serving a fake host module whose
+import side effect runs a nested apply_patches() — simulating the loader
+re-entry — then runs the outer apply_patches() in a worker thread with a
+join timeout so a regression fails instead of hanging the suite.
+
+NOTE: the re-entry trigger is deliberately NOT ``model_tools``. Starting a
+model_tools import from the registration path can deadlock on the module
+import lock across threads (upstream fac3877) — an RLock cannot break that
+cycle, so _preimport_host() and _invalidate_tool_defs_cache() must never
+import model_tools at all (see test_model_tools_import_lock.py). The
+same-thread RLock path is exercised here via another host module import.
 """
 
 from __future__ import annotations
@@ -97,11 +104,19 @@ def _install_fake_host(monkeypatch):
     monkeypatch.setitem(sys.modules, "tools.registry", reg_mod)
     monkeypatch.setitem(sys.modules, "tools.process_registry", process_mod)
     monkeypatch.delitem(sys.modules, "model_tools", raising=False)
+    # Served by the re-entrant finder below; must be absent until imported.
+    monkeypatch.delitem(sys.modules, "tools.process_registry_notifications", raising=False)
     return dt
 
 
+# Host module whose import simulates the loader re-entry. Deliberately NOT
+# model_tools (see module docstring): model_tools must never be imported
+# from the registration path at all.
+_REENTRY_MODULE = "tools.process_registry_notifications"
+
+
 class _ReentrantLoader(importlib.abc.Loader):
-    """Fake model_tools whose import simulates loader re-entry."""
+    """Fake host module whose import simulates loader re-entry."""
 
     def __init__(self, on_exec):
         self._on_exec = on_exec
@@ -110,8 +125,14 @@ class _ReentrantLoader(importlib.abc.Loader):
         return None
 
     def exec_module(self, module):
+        # Provide the seam-D formatter BEFORE the nested pass, so the nested
+        # apply_patches() sees the same state the outer pass would on a
+        # fully-loaded host (and wraps it exactly once).
+        def _format_async_delegation(evt):
+            return f"Role: leaf   Model: {evt.get('model', '?')}"
+
+        module._format_async_delegation = _format_async_delegation
         self._on_exec()
-        module._clear_tool_defs_cache = lambda: None
 
 
 class _ReentrantFinder(importlib.abc.MetaPathFinder):
@@ -119,7 +140,7 @@ class _ReentrantFinder(importlib.abc.MetaPathFinder):
         self._loader = loader
 
     def find_spec(self, name, path=None, target=None):
-        if name == "model_tools":
+        if name == _REENTRY_MODULE:
             return importlib.machinery.ModuleSpec(name, self._loader)
         return None
 

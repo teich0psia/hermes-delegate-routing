@@ -20,6 +20,7 @@ import inspect
 import json
 import logging
 import re
+import sys
 import threading
 
 from ._state import ROUTING, get_creds
@@ -52,11 +53,15 @@ def _redact(text: str) -> str:
 
 # Serializes apply_patches() so a concurrent second caller can't pass the
 # _HDR_PATCHED check before the first sets it (which would double-wrap).
-# A re-entrant lock (not a plain Lock): importing a host module below can
-# re-enter the plugin loader on some hosts (model_tools discovers plugins at
-# import), which calls register() → apply_patches() on this same thread. A
-# plain Lock would deadlock there; with an RLock the nested pass proceeds and
-# the sentinel re-check below keeps patching single (see _preimport_host()).
+# A re-entrant lock (not a plain Lock): importing a host module can
+# re-enter the plugin loader on some hosts (the known example is
+# model_tools, which discovers plugins at import — deliberately never
+# imported from this path since upstream fac3877), which calls register()
+# → apply_patches() on this same thread. A plain Lock would deadlock
+# there; with an RLock the nested pass proceeds and the sentinel re-check
+# below keeps patching single (see _preimport_host()). Cross-thread module
+# import-lock cycles are NOT covered by this RLock — those are avoided by
+# never starting a model_tools import here at all.
 _PATCH_LOCK = threading.RLock()
 
 # True only when the bundled recovery skill registered live in this process.
@@ -423,16 +428,23 @@ def _read_on_error() -> str:
 
 
 def _preimport_host() -> None:
-    """Import every host module the seams touch, before taking _PATCH_LOCK.
+    """Import host modules the seams touch, before taking _PATCH_LOCK.
 
-    Importing one of these can re-enter the plugin loader on some hosts
-    (model_tools discovers plugins at import time), which calls
-    register() → apply_patches() on this same thread. Doing it up-front
-    means any such re-entry completes its own full pass and sets the
-    sentinel, which the caller re-checks under the lock — instead of
+    Importing one of these can re-enter the plugin loader on some hosts,
+    which calls register() → apply_patches() on this same thread. Doing it
+    up-front means any such re-entry completes its own full pass and sets
+    the sentinel, which the caller re-checks under the lock — instead of
     deadlocking (or double-wrapping) mid-patch. All pre-imports are
     best-effort: the seams below keep their own guards and degrade
     gracefully when a module is genuinely absent.
+
+    ``model_tools`` is deliberately NOT pre-imported here. On real hosts it
+    runs plugin discovery at import time, and starting that import from
+    register()/apply_patches() can cycle on the module import lock across
+    threads (main thread importing model_tools while a loader thread
+    re-enters registration). An RLock cannot break that cross-thread cycle
+    — only never starting the import from this path can (upstream fac3877).
+    The same ban applies to _invalidate_tool_defs_cache() below.
     """
     import importlib
 
@@ -440,7 +452,6 @@ def _preimport_host() -> None:
         "tools.registry",
         "tools.process_registry",
         "tools.process_registry_notifications",
-        "model_tools",
         "hermes_cli.config",
     ):
         try:
@@ -486,12 +497,23 @@ def _invalidate_tool_defs_cache(registry) -> None:
                 _release()  # type: ignore[misc]
             except Exception:
                 pass
-    try:
-        from model_tools import _clear_tool_defs_cache
-
-        _clear_tool_defs_cache()
-    except Exception:  # pragma: no cover - defensive; helper may move/rename
-        pass
+    # Never `from model_tools import ...` here: this runs during plugin
+    # registration/discovery, and starting a model_tools import from this
+    # path can deadlock on the module import lock against a concurrent
+    # model_tools import on another thread (upstream fac3877), which an
+    # RLock cannot break. Only reuse an already-loaded module object; a
+    # bumped registry._generation already forces a recompute on the first
+    # get_tool_definitions() call when model_tools is not loaded yet.
+    # A partially-initialized model_tools (mid-import on another thread,
+    # visible in sys.modules without the helper yet) is also tolerated via
+    # the getattr/callable guard.
+    mt = sys.modules.get("model_tools")
+    clear_cache = getattr(mt, "_clear_tool_defs_cache", None) if mt is not None else None
+    if callable(clear_cache):
+        try:
+            clear_cache()
+        except Exception:  # pragma: no cover - defensive; helper may move/rename
+            pass
 
 
 def _patch_schema(dt) -> None:

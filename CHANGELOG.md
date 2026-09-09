@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.1 — 2026-09-09
+
+### Fixed
+
+- Ported upstream `fac3877` (PR #1): `_invalidate_tool_defs_cache()` no
+  longer does `from model_tools import _clear_tool_defs_cache`. Starting a
+  `model_tools` import during plugin registration/discovery can cycle on
+  the module import lock across threads (main thread importing
+  `model_tools`, which itself discovers plugins, while a loader thread
+  re-enters registration) and hang the turn with no output on any
+  provider. The `RLock` from 0.2.3 cannot break that cross-thread cycle —
+  only never starting the import can. The clearer is now reused from an
+  already-loaded `model_tools` only (`sys.modules.get` + callable guard,
+  tolerant of mid-import partial modules); when unloaded, the bumped
+  `registry._generation` already forces a recompute.
+- Fork follow-up: removed `model_tools` from `_preimport_host()`, which
+  `apply_patches()` calls before locking and would otherwise re-open the
+  same import-lock cycle one frame up the stack
+  (`register() → apply_patches() → _preimport_host() → import model_tools`).
+- Regression tests: `test_invalidation_never_imports_model_tools`
+  (MetaPathFinder tripwire + generation/schema assertions) and a partial-
+  module tolerance test in `tests/test_schema_cache_invalidation.py`;
+  fork-specific `tests/test_model_tools_import_lock.py` pinning that
+  neither `_preimport_host()` nor `apply_patches()` starts a
+  `model_tools` import. `tests/test_reentrancy.py` keeps the same-thread
+  `RLock` coverage but triggers re-entry via
+  `tools.process_registry_notifications` instead of `model_tools`.
+
 ## 0.3.0 — 2026-09-08
 
 ### Added

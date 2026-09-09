@@ -138,3 +138,67 @@ def test_invalidation_survives_missing_model_tools(monkeypatch):
     assert reg._generation == gen_before + 1
     props = _task_props(entry)
     assert "model" in props and "provider" in props
+
+
+def test_invalidation_never_imports_model_tools(monkeypatch):
+    """Regression (upstream fac3877): _patch_schema must not start a model_tools import.
+
+    Plugin registration/discovery runs while another thread may be importing
+    model_tools (which itself discovers plugins). Starting a model_tools
+    import from the invalidation path cycles on the module import lock and
+    hangs the turn with no output — an RLock cannot break that cross-thread
+    cycle. Only an already-loaded model_tools may be reused.
+    """
+    import importlib.abc
+
+    from hermes_delegate_routing.patches import _patch_schema
+
+    reg, entry, _cache, dt = _install_fake_registry_and_model_tools(
+        monkeypatch, with_model_tools=False
+    )
+    # The helper parks a None sentinel; drop it so an import attempt would
+    # really reach the finders (a None entry short-circuits to ImportError
+    # without consulting meta_path, hiding the regression).
+    monkeypatch.delitem(sys.modules, "model_tools", raising=False)
+    gen_before = reg._generation
+
+    attempted = []
+
+    class _Tripwire(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name == "model_tools" or name.startswith("model_tools."):
+                attempted.append(name)
+            return None
+
+    tripwire = _Tripwire()
+    sys.meta_path.insert(0, tripwire)
+    try:
+        _patch_schema(dt)  # must not raise
+    finally:
+        sys.meta_path.remove(tripwire)
+
+    assert attempted == []
+    # Schema patch and generation increment still happen.
+    assert reg._generation == gen_before + 1
+    props = _task_props(entry)
+    assert "model" in props and "provider" in props
+
+
+def test_invalidation_tolerates_partial_model_tools(monkeypatch):
+    """A mid-import model_tools (in sys.modules, helper not set yet) is skipped."""
+    from hermes_delegate_routing.patches import _patch_schema
+
+    reg, entry, _cache, dt = _install_fake_registry_and_model_tools(
+        monkeypatch, with_model_tools=False
+    )
+    monkeypatch.delitem(sys.modules, "model_tools", raising=False)
+    # Partially-initialized host module: present in sys.modules but the
+    # cache-clear helper does not exist yet on another thread's import.
+    monkeypatch.setitem(sys.modules, "model_tools", types.ModuleType("model_tools"))
+    gen_before = reg._generation
+
+    _patch_schema(dt)  # must not raise
+
+    assert reg._generation == gen_before + 1
+    props = _task_props(entry)
+    assert "model" in props and "provider" in props

@@ -1,7 +1,7 @@
 ---
 name: delegate-routing
 description: "Use when routing a Hermes subagent by model/provider."
-version: 0.3.0
+version: 0.3.1
 author: Hermes Agent
 license: MIT
 platforms: [windows, macos, linux]

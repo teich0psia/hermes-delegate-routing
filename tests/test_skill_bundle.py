@@ -255,7 +255,7 @@ def test_restore_without_snapshot_is_noop():
     restore_patches()  # must not raise
 
 
-def test_version_is_0_3_0():
+def test_version_is_0_3_1():
     import hermes_delegate_routing
 
-    assert hermes_delegate_routing.__version__ == "0.3.0"
+    assert hermes_delegate_routing.__version__ == "0.3.1"
