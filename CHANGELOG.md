@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.2 — 2026-09-18
+
+### Changed
+
+- Bundled recovery skill is now the single source of truth and leads with
+  the zero-lookup path: copy the values after your own runtime `Model:` /
+  `Provider:` lines verbatim into `tasks[i].model` / `tasks[i].provider`.
+  Profile-specific stale literals were removed; SKILL.md and its reference
+  no longer duplicate each other. (The out-of-tree workspace copy of this
+  skill was deleted outside the repo; the packaged skill supersedes it.)
+- Fail-closed resolver errors and the `tasks[i].model` schema description
+  now embed the same-chat recovery inline, so the common repair no longer
+  requires loading the bundled skill. The skill pointer remains for deeper
+  recovery (inheritance table, error policy, diagnostics).
+- Error example placeholders now reference the runtime metadata values
+  instead of a generic "model ID after /model".
+
+### Tests
+
+- `tests/test_skill_bundle.py`: added coverage that the fail-closed error
+  and the schema description stay self-sufficient with and without a live
+  bundled-skill registration. The hardcoded version pin was replaced with a
+  pyproject/metadata sync check, so releases no longer require editing it.
+
 ## 0.3.1 — 2026-09-09
 
 ### Fixed

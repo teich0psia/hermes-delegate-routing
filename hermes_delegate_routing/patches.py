@@ -118,9 +118,17 @@ _SKILL_FALLBACK_HINT = (
     "lives inside tasks[i] only; there is no top-level model/provider/reasoning_effort "
     "argument)."
 )
+# Keep the common repair inline: plugin skills require an explicit skill_view.
+_SAME_CHAT_HINT = (
+    " For the same route as this chat, copy the values after Model: and Provider: "
+    "in your own system prompt's runtime metadata verbatim into tasks[i].model "
+    "and tasks[i].provider (both, without the labels). If either is missing, "
+    "do not guess; look up the exact pair or ask for clarification. "
+    "Omitted fields inherit delegation/config defaults, not necessarily this chat."
+)
 _MINIMAL_EXAMPLE = (
-    '{"tasks": [{"goal": "...", "model": "<exact model ID after /model>", '
-    '"provider": "<exact provider id>"}]}'
+    '{"tasks": [{"goal": "...", "model": "<value after your runtime Model:>", '
+    '"provider": "<value after your runtime Provider:>"}]}'
 )
 
 
@@ -143,7 +151,7 @@ _TASK_MODEL_DESC = (
     "whole call instead of silently running another model (on_error=fallback "
     "skips just that override). When omitted, the child inherits the "
     "batch/config model."
-)
+) + _SAME_CHAT_HINT
 _TASK_PROVIDER_DESC = (
     "Per-task provider id for THIS child only — set inside tasks[i]; there is no "
     "top-level provider argument. Must be an exact configured provider id; "
@@ -273,7 +281,7 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                         "delegate_task routing: could not resolve task override "
                         f"for task {i} (model={model!r}, provider={provider!r}, "
                         f"reasoning_effort={reasoning_effort!r}): {_redact(exc)}."
-                        f"{_skill_pointer()} Example: {_MINIMAL_EXAMPLE}",
+                        f"{_SAME_CHAT_HINT}{_skill_pointer()} Example: {_MINIMAL_EXAMPLE}",
                         tool_error,
                     )
         token = ROUTING.set(routing)

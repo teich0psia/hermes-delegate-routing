@@ -1,54 +1,15 @@
 # Delegate-routing reference
 
-## Canonical one-child call
+## Field inheritance
 
-```text
-delegate_task(tasks=[{
-  "goal": "...",
-  "context": "...",
-  "model": "<exact /model name>",
-  "provider": "<exact configured provider id>",
-  "reasoning_effort": "minimal"
-}])
-```
-
-Use the literal model/provider values from the current session's runtime
-metadata — never guess, normalize case, or rewrite a display name into
-`provider/model` syntax.
-
-## Why `tasks[]` is mandatory
-
-The plugin wraps four Hermes seams:
-
-1. the tool schema advertises `tasks[].model`, `tasks[].provider`, and
-   `tasks[].reasoning_effort`;
-2. the delegate call resolves those fields through Hermes' model-switch and
-   reasoning parsers;
-3. the child builder applies the resolved route by `task_index`;
-4. async completion display reports the actual child model when the host exposes
-   the formatter.
-
-The host special-cases `delegate_task` and drops unsupported top-level routing
-arguments before execution. Therefore this is wrong even for one task:
-
-```text
-delegate_task(
-  goal="...",
-  model="...",
-  provider="..."
-)
-```
-
-This is the correct form (see the canonical call above).
-
-## Precedence examples
-
-Assume the current profile baseline is:
+Each field resolves independently: task value → matching `delegation.*`
+setting → parent inheritance. For example, with this hypothetical baseline
+(placeholders, not current profile values):
 
 ```yaml
 delegation:
-  model: gpt-5.6-luna
-  provider: openai-codex
+  model: "<baseline model id>"
+  provider: "<baseline provider id>"
 ```
 
 | Task fields | Effective behavior |
@@ -59,37 +20,44 @@ delegation:
 | both | exact requested model/provider pair |
 | reasoning only | normal model/provider, task-local reasoning override |
 
-Thus a cross-provider request must normally set both fields. Do not assume a
-model string alone selects the provider currently used by the parent chat.
+The resolver also accepts inline `--provider <id>` in the model string; this
+counts as an explicit provider. Prefer the structured field for JSON calls.
+
+## Reasoning levels
+
+`reasoning_effort` uses the host's supported vocabulary: `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, `max`, or `ultra`, depending on host version.
 
 ## Error policy
 
 `delegate_routing.on_error` defaults to `fail`. A bad literal, unavailable
-provider, conflicting inline provider, or unsupported reasoning value fails the
-whole delegation call before children start. This is preferable to silently
-running the wrong model. If the user explicitly requests best-effort behavior,
-set the profile option to `fallback` only after explaining that the requested
-route may be skipped.
+provider, conflicting inline provider, or unsupported reasoning value fails
+the whole delegation call before children start. Under `fallback`, a failed
+task override is skipped and normal delegation may run on a different route.
+Do not switch to `fallback` merely to make an error disappear; use it only
+when the user explicitly accepts best-effort routing.
 
-## Actual-model verification
+## Failure diagnostics
 
-For synchronous results, inspect each structured result's `model` and
-`provider` fields when present. For background results, inspect the completion
-payload's per-result data or the child session/turn record. A batch header may
-represent the profile-level model captured before per-task routing. The plugin
-patches the supported async formatter, but the host can move that private
-formatter; a display warning is not by itself a routing failure.
+Only investigate configuration after a routed call fails or the runtime
+reports a stale plugin:
 
-## Minimal diagnostics
-
-Use these only after an actual routed call fails or the runtime reports a stale
-plugin:
-
-```bash
-hermes config get plugins
-hermes config get delegation
-python -c "import hermes_delegate_routing; print(hermes_delegate_routing.__version__)"
+```text
+terminal(command="hermes config get plugins && hermes config get delegation")
 ```
 
-If the log warns that a previous Hermes update was not followed by a gateway
-restart, restart before comparing installed-package and live-process behavior.
+If package/process version skew is suspected, use the relevant Hermes
+interpreter, outside a source checkout:
+
+```text
+terminal(command="python -c \"import hermes_delegate_routing; print(hermes_delegate_routing.__version__)\"")
+```
+
+That fresh interpreter does not prove which version a resident gateway loaded.
+If logs report `INACTIVE`, inspect the host/signature warning. After a host or
+plugin update, a stale gateway may need a restart before retrying; a restart
+alone cannot fix an unsupported host signature.
+
+The plugin corrects async completion display when the host exposes the
+supported formatter. A warning about that private formatter does not by
+itself prove a routing failure.

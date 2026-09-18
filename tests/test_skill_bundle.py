@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+import pytest
 
 from hermes_delegate_routing.patches import (
     _MINIMAL_EXAMPLE,
@@ -117,6 +120,35 @@ def test_fail_closed_error_without_live_skill_omits_dead_pointer():
     assert _SKILL_REF not in err
     assert "tasks[i]" in err  # schema guidance still present
     assert _MINIMAL_EXAMPLE in err
+
+
+@pytest.mark.parametrize("skill_live", [False, True])
+def test_same_chat_recovery_does_not_require_loading_skill(monkeypatch, skill_live):
+    monkeypatch.setattr("hermes_delegate_routing.patches.SKILL_LIVE", skill_live)
+
+    def host(**_kw):
+        raise AssertionError("host must not run on fail-closed error")
+
+    wrapped = make_delegate_task_wrapper(host, _raising_resolver)
+    err = json.loads(wrapped(tasks=[{"goal": "a", "model": "nope"}]))["error"]
+    for needle in (
+        "same route as this chat", "your own system prompt", "Model:", "Provider:",
+        "verbatim", "tasks[i].model", "tasks[i].provider", "do not guess",
+    ):
+        assert needle in err
+    assert ("skill_view" in err) is skill_live
+    example = json.loads(err.split("Example: ", 1)[1])["tasks"][0]
+    assert "Model:" in example["model"]
+    assert "Provider:" in example["provider"]
+
+
+def test_schema_explains_same_chat_route_before_omitted_fields_can_inherit():
+    desc = _props()["model"]["description"]
+    for needle in (
+        "same route as this chat", "your own system prompt", "Model:", "Provider:",
+        "verbatim", "tasks[i].model", "tasks[i].provider", "do not guess",
+    ):
+        assert needle in desc
 
 
 def test_skill_pointer_follows_live_flag():
@@ -255,7 +287,10 @@ def test_restore_without_snapshot_is_noop():
     restore_patches()  # must not raise
 
 
-def test_version_is_0_3_1():
+def test_version_matches_pyproject():
     import hermes_delegate_routing
 
-    assert hermes_delegate_routing.__version__ == "0.3.1"
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declared = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+    assert declared is not None
+    assert hermes_delegate_routing.__version__ == declared.group(1)
