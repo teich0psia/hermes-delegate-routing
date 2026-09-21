@@ -385,3 +385,74 @@ def test_fast_rejects_proxy_using_the_real_host_gate():
     with pytest.raises(ValueError, match="unsupported"):
         _apply_fast_override(child, True)
     assert child.request_overrides == {}
+
+
+def test_fast_with_an_explicit_route_reaches_the_sdk_boundary():
+    """Fast combined with tasks[i].model: apply must use the ROUTED child route."""
+    from copy import deepcopy
+
+    from hermes_cli import models
+
+    resolve_fast_mode_overrides = getattr(models, "resolve_fast_mode_overrides", None)
+    if not callable(resolve_fast_mode_overrides):
+        pytest.skip("host has no route-aware Fast resolver")
+    if not resolve_fast_mode_overrides(
+        "gpt-5.4", provider="openai", base_url="https://api.openai.com/v1",
+    ):
+        pytest.skip("host does not support Fast on the integration test route")
+    neutral_credentials = _neutral_credentials_kwargs()
+    assert apply_patches() is True
+    seen: list[list] = []
+
+    def _fast_route(*, raw_input, **_kwargs):
+        if (raw_input or "").strip() != "route-fast":
+            return SimpleNamespace(success=False, error_message=f"unknown model {raw_input!r}")
+        return SimpleNamespace(
+            success=True, new_model="gpt-5.4", target_provider="openai",
+            base_url="https://api.openai.com/v1", api_key="key-for-openai",
+            api_mode="chat_completions", request_overrides={}, error_message=None,
+        )
+
+    def _recording_openai(*_args, **kwargs):
+        client = MagicMock()
+        client.base_url = kwargs.get("base_url")
+        calls: list[dict] = []
+        seen.append(calls)
+
+        def _create(**call_kwargs):
+            calls.append(deepcopy(call_kwargs))
+            return _no_tool_response(**call_kwargs)
+
+        client.chat.completions.create = _create
+        client.close = MagicMock()
+        return client
+
+    with patch("hermes_cli.model_switch.switch_model", side_effect=_fast_route), patch(
+        "hermes_cli.model_switch.parse_model_flags",
+        side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
+    ), _patch_client_ctor(_recording_openai), patch(
+        "socket.socket.connect", side_effect=AssertionError("network forbidden in test")
+    ), patch.object(
+        run_agent.AIAgent, "_build_system_prompt", return_value="You are a test agent"
+    ):
+        parent = run_agent.AIAgent(
+            model="parent-model", provider="prov-parent", base_url="https://parent.test/v1",
+            api_key="parent-key", api_mode="chat_completions", max_iterations=1,
+            enabled_toolsets=["terminal"], quiet_mode=True,
+            skip_context_files=True, skip_memory=True, platform="cli",
+        )
+        try:
+            raw = dt.delegate_task(
+                tasks=[{"goal": "Return one word.", "model": "route-fast", "fast": True}],
+                background=False, max_iterations=1, parent_agent=parent,
+                **neutral_credentials,
+            )
+        finally:
+            parent.close()
+
+    result = json.loads(raw)
+    assert "error" not in result, result
+    child_calls = [calls for calls in seen if calls]
+    assert len(child_calls) == 1, result
+    assert child_calls[0][0]["model"] == "gpt-5.4"
+    assert child_calls[0][0].get("service_tier") == "priority"

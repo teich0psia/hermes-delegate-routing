@@ -130,6 +130,13 @@ _MINIMAL_EXAMPLE = (
     '{"tasks": [{"goal": "...", "model": "<value after your runtime Model:>", '
     '"provider": "<value after your runtime Provider:>"}]}'
 )
+# A fast type error needs the offending value and the field's own shape, not the
+# model/provider repair hint.
+_FAST_MINIMAL_EXAMPLE = '{"tasks": [{"goal": "...", "fast": true}]}'
+
+
+class _FastInputError(ValueError):
+    """A per-task ``fast`` value that is not a JSON boolean."""
 
 
 def _skill_pointer() -> str:
@@ -281,7 +288,10 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                         )
                     if has_fast:
                         if not isinstance(t["fast"], bool):
-                            raise ValueError("fast must be a boolean (true or false), or omitted")
+                            raise _FastInputError(
+                                "fast must be a boolean (true or false), or omitted; "
+                                f"got {t['fast']!r}"
+                            )
                         route["fast"] = t["fast"]
                         route["fast_on_error"] = on_error
                     routing[i] = route
@@ -294,6 +304,13 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                             i, model, provider, reasoning_effort, _redact(exc),
                         )
                         continue
+                    if isinstance(exc, _FastInputError):
+                        return _tool_error(
+                            f"delegate_task routing: invalid fast value for task {i}: "
+                            f"{_redact(exc)}. Remove the field to preserve existing "
+                            f"behavior.{_skill_pointer()} Example: {_FAST_MINIMAL_EXAMPLE}",
+                            tool_error,
+                        )
                     return _tool_error(
                         "delegate_task routing: could not resolve task override "
                         f"for task {i} (model={model!r}, provider={provider!r}, "
@@ -327,9 +344,19 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
 
 def _apply_fast_override(child, enabled):
     """Apply Fast to one constructed child, never to shared parent settings."""
-    for name in ("request_overrides", "service_tier"):
+    required = ("request_overrides", "service_tier")
+    if enabled:
+        # ON resolves the child's route, so a host that stops exposing either
+        # attribute must fail closed here rather than raise an uncaught error.
+        required += ("model", "provider")
+    for name in required:
         if not hasattr(child, name):
             raise ValueError(f"Hermes Fast attribute {name!r} is unavailable on this host")
+    base_overrides = child.request_overrides
+    if base_overrides is not None and not isinstance(base_overrides, dict):
+        raise ValueError(
+            "Hermes Fast attribute 'request_overrides' is not a mapping on this host"
+        )
     overrides = {}
     if enabled:
         try:
@@ -346,7 +373,7 @@ def _apply_fast_override(child, enabled):
         if not overrides:
             raise ValueError("Requested fast=True is unsupported for this child route")
 
-    request_overrides = copy.deepcopy(child.request_overrides or {})
+    request_overrides = copy.deepcopy(base_overrides or {})
     # Remove inherited Fast flags in both SDK kwargs and extra_body. Keep
     # unrelated provider settings (including non-Fast service tiers) untouched.
     for values in (request_overrides, request_overrides.get("extra_body")):
@@ -359,6 +386,60 @@ def _apply_fast_override(child, enabled):
     child.request_overrides = request_overrides
     # Explicit OFF also disables the host's auto/cold Fast window.
     child.service_tier = "priority" if enabled else None
+
+
+def _discard_rejected_children(parent_agent, fast_children, child):
+    """Close and detach every child of a rejected Fast batch (best effort)."""
+    rejected = fast_children if fast_children is not None else [child]
+    for candidate in list(rejected):
+        close = getattr(candidate, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug("Could not close rejected Fast child", exc_info=True)
+        _detach_rejected_child(parent_agent, candidate)
+    if fast_children is not None:
+        fast_children.clear()
+
+
+def _detach_rejected_child(parent_agent, child):
+    """Remove a rejected child from parent interrupt propagation.
+
+    The host attaches every child while building it (``_attach_child`` inside
+    ``_build_child_agent``), so closing a child from a rejected batch is not
+    enough: without detaching, the parent keeps referencing the closed child for
+    the rest of the session and closes it a second time on ``parent.close()``.
+    Reuses the host helper when this host exposes it, and mirrors it otherwise.
+    """
+    if parent_agent is None:
+        return
+    try:
+        from tools.delegate_tool_child_run import _detach_child as host_detach
+    except Exception:
+        host_detach = None
+    if callable(host_detach):
+        try:
+            host_detach(parent_agent, child)
+            return
+        except Exception:
+            logger.debug("Host detach failed; using inline removal", exc_info=True)
+    active = getattr(parent_agent, "_active_children", None)
+    remove = getattr(active, "remove", None)
+    if not callable(remove):
+        return
+    try:
+        lock = getattr(parent_agent, "_active_children_lock", None)
+        if lock:
+            with lock:
+                remove(child)
+        else:
+            remove(child)
+    except ValueError:  # already detached
+        pass
+    except Exception:
+        logger.debug("Could not detach rejected Fast child", exc_info=True)
+
 
 def make_build_child_wrapper(orig_build_child):
     """Wrap ``_build_child_agent`` to inject per-task creds keyed by task_index.
@@ -424,22 +505,24 @@ def make_build_child_wrapper(orig_build_child):
         if creds and "fast" in creds:
             try:
                 _apply_fast_override(child, creds["fast"])
-            except ValueError as exc:
-                msg = f"delegate-routing: task {task_index} fast override failed: {_redact(exc)}"
+            except Exception as exc:
+                # Normalize any apply failure to ValueError: the host's build-error
+                # path catches ValueError only, so an unexpected error class would
+                # escape with the batch's children still open and attached.
+                route = (
+                    f"model={getattr(child, 'model', None)!r} "
+                    f"provider={getattr(child, 'provider', None)!r}"
+                )
+                msg = (
+                    f"delegate-routing: task {task_index} fast override failed "
+                    f"({route}): {_redact(exc)}"
+                )
                 if creds.get("fast_on_error") == "fallback":
                     # Route/reasoning have already resolved. Skip only Fast;
                     # never reroute a constructed child or mutate its defaults.
                     logger.warning("%s; keeping the child's existing Fast settings", msg)
                 else:
-                    for rejected in fast_children if fast_children is not None else [child]:
-                        close = getattr(rejected, "close", None)
-                        if callable(close):
-                            try:
-                                close()
-                            except Exception:
-                                logger.debug("Could not close rejected Fast child", exc_info=True)
-                    if fast_children is not None:
-                        fast_children.clear()
+                    _discard_rejected_children(parent_agent, fast_children, child)
                     raise ValueError(msg) from exc
             else:
                 logger.info("delegate-routing: task %d fast=%s applied", task_index, creds["fast"])

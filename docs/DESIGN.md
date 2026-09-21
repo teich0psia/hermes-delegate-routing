@@ -187,12 +187,18 @@ with Hermes' `resolve_fast_mode_overrides`, including the native Anthropic URL.
 It deep-copies `child.request_overrides`, clears recognized Fast flags at the top
 level and inside `extra_body`, and merges the host's Fast parameters for ON.
 Explicit ON wins over conflicting nested tier values; OFF preserves non-Fast
-tiers. Setting only the child's `service_tier` also disables its `auto`/`cold`
-window on OFF. Neither parent state nor persistent config is modified.
+tiers. OFF also clears the child's `service_tier`, which covers a bounded
+`auto`/`cold` Fast window if a host ever hands one to a child — current hosts
+build children without a bounded Fast mode, so that part is defensive. Neither
+parent state nor persistent config is modified.
 
-Default capability failures abort before execution and close the constructed
-children in that call. The cleanup list is call-local and exists only for batches
-with a valid Fast option. On `on_error: fallback`, a capability failure skips only
+Default capability failures abort before execution and close *and detach* the
+constructed children in that call — the host attaches each child to the parent
+while building it, so a rejected batch must undo both. The cleanup list is
+call-local and exists only for batches with a valid Fast option, and an apply
+failure of any exception class is normalized onto the host's `ValueError` path so
+a drifted host cannot strand a half-built batch. On `on_error: fallback`, a
+capability failure skips only
 Fast and leaves the resolved route/reasoning and original Fast settings intact;
 invalid input types instead follow existing capture-time fallback semantics.
 Successful application and capability fallback are logged explicitly. The host

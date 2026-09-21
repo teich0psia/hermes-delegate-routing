@@ -87,7 +87,7 @@ delegate_task(tasks=[
 |---|---|
 | omitted | Existing delegation behavior, unchanged; **not** an implicit `false` |
 | `true` | Enable Fast for this child only, if its resolved route supports it |
-| `false` | Disable Fast for this child, including inherited Fast request flags and `auto`/`cold` windows |
+| `false` | Disable Fast for this child, including inherited Fast request flags (and a bounded `auto`/`cold` window, if a host ever gives children one) |
 
 Only JSON booleans are accepted: `null`, strings, and numbers are invalid.
 Fast never changes the parent, siblings, model, provider, reasoning effort, or
@@ -103,7 +103,8 @@ Custom gateway-specific tier names are outside this option's scope.
 
 Under the default `delegate_routing.on_error: fail`, an unsupported Fast request
 or missing host capability fails the delegation before child execution; already
-constructed children are closed. With `on_error: fallback`, a Fast capability
+constructed children are closed and detached from the parent, so a rejected
+batch leaves no child behind. With `on_error: fallback`, a Fast capability
 failure warns and preserves that child's pre-existing Fast settings, keeping its
 resolved model/provider/reasoning. Invalid input types are capture-time errors
 and follow the existing policy of skipping the entire task override in fallback

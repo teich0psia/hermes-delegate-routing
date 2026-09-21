@@ -13,6 +13,20 @@
   handling, fallback, and rejected-batch cleanup. Offline host-backed tests cover
   actual SDK request parameters, Codex transport assembly, and proxy rejection.
 
+### Fixed
+
+- A rejected Fast batch now detaches its closed children from the parent as well
+  as closing them, and an apply failure of any exception class is normalized onto
+  the host's `ValueError` path — a drifted host can no longer strand a half-built,
+  still-attached batch.
+- Fast failures name the affected child's resolved model/provider, and an invalid
+  `fast` value reports the offending value instead of the model/provider repair hint.
+- Docs/skill: the `auto`/`cold` clause is described as defensive (current hosts
+  build children without a bounded Fast mode), and a test now pins the documented
+  `fast=<bool> applied` application line. Coverage added for provider-only tasks,
+  an explicit-route SDK-boundary run, mixed valid/invalid batches, fallback with an
+  invalid type, non-mapping `request_overrides`, and non-Fast tier preservation on OFF.
+
 ## 0.3.2 — 2026-09-18
 
 ### Changed

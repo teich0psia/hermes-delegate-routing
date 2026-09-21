@@ -47,9 +47,12 @@ Supply real goals/context before use. Add a resolved model/provider pair to each
 task only when an exact route is also required by the request or task instructions.
 
 ON uses Hermes' `resolve_fast_mode_overrides` on the child's final route. OFF
-removes recognized inherited Fast flags and disables that child's `auto`/`cold`
-Fast window; it preserves non-Fast settings. Both explicit values require the
-child's request/Fast attributes. Omission requires none of these capabilities.
+removes recognized inherited Fast flags and clears the child's bounded
+`auto`/`cold` Fast mode (defensive — current hosts do not hand children one);
+it preserves non-Fast settings. Both explicit values require the child's
+request/Fast attributes. Omission requires none of these capabilities. A
+rejected batch (default `on_error: fail`) closes and detaches every child built
+so far, so the parent keeps no closed child.
 
 Match application evidence to the affected child/task index. The plugin logs
 `delegate-routing: task <index> fast=True applied` (or `fast=False`); otherwise
@@ -64,7 +67,7 @@ is available, distinguish requested Fast from verified Fast in the result.
 | Failure stage | Default `fail` | Explicit `fallback` |
 |---|---|---|
 | Capture: bad route literal, unavailable provider, conflicting inline provider, unsupported reasoning, invalid Fast type | Fail the call before children start | Skip the failed task override; normal delegation may use a different route |
-| Apply: Fast capability unavailable on the constructed child's route/host | Reject the batch before execution; close constructed children | Skip only Fast; keep resolved route, reasoning, and pre-existing Fast settings |
+| Apply: Fast capability unavailable on the constructed child's route/host | Reject the batch before execution; close and detach the constructed children | Skip only Fast; keep resolved route, reasoning, and pre-existing Fast settings |
 
 Do not enable fallback to conceal an error; use it only when the user explicitly
 accepts best-effort behavior. A fallback warning is not proof that Fast is OFF.

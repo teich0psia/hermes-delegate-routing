@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
@@ -223,3 +224,172 @@ def test_rejected_fast_batch_also_closes_previously_constructed_children(fast_re
     assert len(children) == 2
     for child in children:
         child.close.assert_called_once()
+
+
+def _attaching_host(parent, children, on_error="fail"):
+    """A host-shaped harness that attaches each child like the real host does."""
+
+    def build_child(task_index, goal, context, toolsets, model, max_iterations,
+                    task_count, parent_agent, **kwargs):
+        child = SimpleNamespace(
+            model="fast-model", provider="openai-codex", base_url="https://example.test/v1",
+            api_mode="chat_completions", service_tier=None, request_overrides={}, close=Mock(),
+        )
+        children.append(child)
+        parent_agent._active_children.append(child)  # host attaches during construction
+        return child
+
+    wrapped_build = make_build_child_wrapper(build_child)
+
+    def delegate_task(tasks=None, parent_agent=None, **_kwargs):
+        for i, task in enumerate(tasks or []):
+            wrapped_build(i, task["goal"], None, None, None, 10, len(tasks), parent_agent)
+        return "ok"
+
+    return make_delegate_task_wrapper(delegate_task, _unused_resolver, on_error=on_error)
+
+
+def _attached_parent():
+    parent = _parent()
+    parent._active_children = []
+    return parent
+
+
+def test_rejected_fast_batch_closes_and_detaches_every_constructed_child(fast_resolver):
+    """A rejected batch must leave no closed child referenced by the parent."""
+    fast_resolver.return_value = None
+    parent = _attached_parent()
+    children = []
+    delegate = _attaching_host(parent, children)
+    with pytest.raises(ValueError, match="fast=True.*unsupported"):
+        delegate(tasks=[{"goal": "first"}, {"goal": "rejected", "fast": True}],
+                 parent_agent=parent)
+    assert len(children) == 2
+    for child in children:
+        child.close.assert_called_once()
+    assert parent._active_children == []
+
+
+def test_non_valueerror_apply_failure_is_normalized_and_still_cleans_up(fast_resolver):
+    """An unexpected error class must not escape with the batch left attached."""
+    fast_resolver.side_effect = TypeError("boom from the host resolver")
+    parent = _attached_parent()
+    children = []
+    delegate = _attaching_host(parent, children)
+    with pytest.raises(ValueError, match="fast override failed"):
+        delegate(tasks=[{"goal": "first"}, {"goal": "boom", "fast": True}], parent_agent=parent)
+    assert parent._active_children == []
+    for child in children:
+        child.close.assert_called_once()
+
+
+def test_fallback_keeps_the_live_child_attached_to_the_parent(fast_resolver, caplog):
+    """Fallback keeps the child running, so it must stay owned by the parent."""
+    fast_resolver.return_value = None
+    parent = _attached_parent()
+    children = []
+    delegate = _attaching_host(parent, children, on_error="fallback")
+    assert delegate(tasks=[{"goal": "kept", "fast": True}], parent_agent=parent) == "ok"
+    assert parent._active_children == children
+    children[0].close.assert_not_called()
+    assert "fast" in caplog.text and "unsupported" in caplog.text
+
+
+def test_apply_failure_message_names_the_child_route(fast_resolver):
+    fast_resolver.return_value = None
+    parent = _parent()
+    children = []
+    delegate = make_delegate_task_wrapper(_host(children), _unused_resolver)
+    with pytest.raises(ValueError) as excinfo:
+        delegate(tasks=[{"goal": "unsupported", "fast": True}], parent_agent=parent)
+    message = str(excinfo.value)
+    assert "model='fast-model'" in message
+    assert "provider='openai-codex'" in message
+
+
+@pytest.mark.parametrize("missing", ["model", "provider"])
+def test_fast_on_fails_closed_when_the_route_attributes_are_missing(missing, fast_resolver):
+    from hermes_delegate_routing.patches import _apply_fast_override
+
+    child = _parent()
+    delattr(child, missing)
+    with pytest.raises(ValueError, match="Fast.*attribute"):
+        _apply_fast_override(child, True)
+
+
+def test_non_mapping_request_overrides_fails_closed(fast_resolver):
+    from hermes_delegate_routing.patches import _apply_fast_override
+
+    child = _parent(request_overrides=5)
+    with pytest.raises(ValueError, match="not a mapping"):
+        _apply_fast_override(child, False)
+
+
+def test_fast_applies_to_a_provider_only_task(fast_resolver):
+    children = []
+    resolver = Mock(return_value={"provider": "other-provider"})
+    delegate = make_delegate_task_wrapper(_host(children), resolver)
+    assert delegate(tasks=[
+        {"goal": "provider only", "provider": "other-provider", "fast": True},
+    ], parent_agent=_parent()) == "ok"
+    child = children[0]
+    assert (child.model, child.provider) == ("fast-model", "other-provider")
+    assert child.request_overrides == {"service_tier": "priority"}
+    assert child.service_tier == "priority"
+
+
+def test_off_preserves_non_fast_tiers(fast_resolver):
+    from hermes_delegate_routing.patches import _apply_fast_override
+
+    inherited = {
+        "service_tier": "flex", "speed": "standard",
+        "extra_body": {"service_tier": "flex", "speed": "standard"},
+    }
+    child = _parent(request_overrides=inherited)
+    _apply_fast_override(child, False)
+    assert child.request_overrides == inherited
+    assert child.service_tier is None
+
+
+def test_invalid_fast_value_rejects_the_whole_mixed_batch():
+    host = Mock(return_value="ok")
+    delegate = make_delegate_task_wrapper(host, _unused_resolver)
+    raw = delegate(tasks=[{"goal": "valid"}, {"goal": "invalid", "fast": "yes"}])
+    host.assert_not_called()
+    error = json.loads(raw)["error"]
+    assert "invalid fast value" in error
+    assert "for task 1" in error
+
+
+@pytest.mark.parametrize("value,shown", [(1, "got 1"), ("true", "got 'true'"), (None, "got None")])
+def test_invalid_fast_error_shows_the_value_without_a_route_hint(value, shown):
+    host = Mock(return_value="ok")
+    delegate = make_delegate_task_wrapper(host, _unused_resolver)
+    error = json.loads(delegate(tasks=[{"goal": "bad", "fast": value}]))["error"]
+    assert shown in error
+    assert "Model:" not in error
+
+
+def test_invalid_fast_type_falls_back_to_batch_routing(fast_resolver, caplog):
+    children = []
+    delegate = make_delegate_task_wrapper(_host(children), _unused_resolver, on_error="fallback")
+    assert delegate(tasks=[
+        {"goal": "invalid fast", "model": "other-model", "reasoning_effort": "low", "fast": "yes"},
+    ], parent_agent=_parent()) == "ok"
+    child = children[0]
+    assert child.model == "fast-model"  # the whole task override was skipped
+    assert child.reasoning_config == {"effort": "high", "enabled": True}
+    assert child.request_overrides == {}
+    assert child.service_tier is None
+    assert "failed to resolve" in caplog.text
+
+
+@pytest.mark.parametrize("fast,expected", [(True, "task 0 fast=True applied"),
+                                           (False, "task 0 fast=False applied")])
+def test_success_log_line_is_the_documented_evidence(fast, expected, fast_resolver, caplog):
+    """The bundled skill teaches this exact line as Fast application evidence."""
+    caplog.set_level(logging.INFO)
+    children = []
+    delegate = make_delegate_task_wrapper(_host(children), _unused_resolver)
+    assert delegate(tasks=[{"goal": "on", "fast": fast}], parent_agent=_parent()) == "ok"
+    assert f"delegate-routing: {expected}" in caplog.text
