@@ -174,6 +174,30 @@ A future upstream change that routed `delegate_task` through the registry, or th
 landed the `runtime_override` primitive (PR #23898), would let this plugin drop the
 monkeypatch.
 
+### 6.2 Optional Fast control
+
+`tasks[i].fast` is a boolean opt-in field, independent of routing and reasoning.
+There is deliberately no schema default: omission takes the exact existing path,
+`true` enables Fast, and `false` disables it for that child only. No new global or
+`delegation.*` configuration is added.
+
+Capture validates the boolean and stores it in the existing task-indexed
+`ContextVar`. Apply uses the constructed child's actual model/provider/endpoint
+with Hermes' `resolve_fast_mode_overrides`, including the native Anthropic URL.
+It deep-copies `child.request_overrides`, clears recognized Fast flags at the top
+level and inside `extra_body`, and merges the host's Fast parameters for ON.
+Explicit ON wins over conflicting nested tier values; OFF preserves non-Fast
+tiers. Setting only the child's `service_tier` also disables its `auto`/`cold`
+window on OFF. Neither parent state nor persistent config is modified.
+
+Default capability failures abort before execution and close the constructed
+children in that call. The cleanup list is call-local and exists only for batches
+with a valid Fast option. On `on_error: fallback`, a capability failure skips only
+Fast and leaves the resolved route/reasoning and original Fast settings intact;
+invalid input types instead follow existing capture-time fallback semantics.
+Successful application and capability fallback are logged explicitly. The host
+still owns provider support, wire formatting, and any later provider fallback.
+
 ## 7. Alternatives considered
 
 | Approach | Why not |

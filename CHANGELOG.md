@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Optional per-task `fast` boolean: ON/OFF affects only the selected child;
+  omission preserves existing delegation behavior and call shapes.
+- Reuse Hermes' route-aware Fast resolver; preserve model/provider/reasoning
+  settings and reject unsupported routes by default. Explicit OFF removes
+  inherited Fast flags without changing shared parent/sibling dictionaries.
+- Unit coverage for mixed batches, boolean validation, unsupported/missing-host
+  handling, fallback, and rejected-batch cleanup. Offline host-backed tests cover
+  actual SDK request parameters, Codex transport assembly, and proxy rejection.
+
 ## 0.3.2 — 2026-09-18
 
 ### Changed

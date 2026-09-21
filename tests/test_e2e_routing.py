@@ -276,3 +276,112 @@ def test_per_task_reasoning_effort_reaches_the_request_boundary():
     by_model = {call["model"]: call for call in child_calls}
     assert by_model["resolved-alpha"]["extra_body"]["reasoning"]["effort"] == "low"
     assert by_model["resolved-beta"]["extra_body"]["reasoning"]["effort"] == "high"
+
+
+@pytest.mark.parametrize("inherited_fast", [False, True])
+def test_mixed_fast_values_reach_real_host_sdk_boundary(inherited_fast):
+    """Actual AIAgent + delegate loop; only the network/SDK is replaced."""
+    from copy import deepcopy
+
+    from hermes_cli import models
+
+    resolve_fast_mode_overrides = getattr(models, "resolve_fast_mode_overrides", None)
+    if not callable(resolve_fast_mode_overrides):
+        pytest.skip("host has no route-aware Fast resolver")
+    if not resolve_fast_mode_overrides(
+        "gpt-5.4", provider="openai", base_url="https://api.openai.com/v1",
+    ):
+        pytest.skip("host does not support Fast on the integration test route")
+    neutral_credentials = _neutral_credentials_kwargs()
+    assert apply_patches() is True
+    seen = []
+
+    def recording_client(*_args, **kwargs):
+        client = MagicMock()
+        client.base_url = kwargs.get("base_url")
+        client.api_key = kwargs.get("api_key")
+        calls = []
+        seen.append(calls)
+
+        def create(**call_kwargs):
+            calls.append(deepcopy(call_kwargs))
+            return _no_tool_response(**call_kwargs)
+
+        client.chat.completions.create = create
+        return client
+
+    inherited = {"service_tier": "priority"} if inherited_fast else {}
+    with _patch_client_ctor(recording_client), patch.object(
+        run_agent.AIAgent, "_build_system_prompt", return_value="You are a test agent"
+    ), patch("socket.socket.connect", side_effect=AssertionError("network forbidden in test")):
+        parent = run_agent.AIAgent(
+            model="gpt-5.4", provider="openai", base_url="https://api.openai.com/v1",
+            api_key="test-only-key", api_mode="chat_completions",
+            request_overrides=deepcopy(inherited), max_iterations=1,
+            enabled_toolsets=["terminal"], quiet_mode=True,
+            skip_context_files=True, skip_memory=True, platform="cli",
+        )
+        try:
+            raw = dt.delegate_task(
+                tasks=[
+                    {"goal": "Return one word.", "fast": True},
+                    {"goal": "Return one word.", "fast": False},
+                    {"goal": "Return one word."},
+                ],
+                background=False, max_iterations=1, parent_agent=parent,
+                **neutral_credentials,
+            )
+            assert parent.request_overrides == inherited
+        finally:
+            parent.close()
+
+    result = json.loads(raw)
+    assert "error" not in result, result
+    child_calls = [calls for calls in seen if calls]
+    assert len(child_calls) == 3, result
+    assert [calls[0].get("service_tier") for calls in child_calls] == [
+        "priority", None, "priority" if inherited_fast else None,
+    ]
+    assert all(call["model"] == "gpt-5.4" for calls in child_calls for call in calls)
+
+
+@pytest.mark.parametrize("fast", [True, False])
+def test_fast_survives_native_codex_request_assembly(fast):
+    """Host Fast resolver and Codex transport, with no credentials or network."""
+    from hermes_delegate_routing.patches import _apply_fast_override
+
+    models = pytest.importorskip("hermes_cli.models")
+    transport = pytest.importorskip("agent.transports.codex")
+    windows = pytest.importorskip("agent.fast_mode")
+    if not callable(getattr(models, "resolve_fast_mode_overrides", None)):
+        pytest.skip("host has no route-aware Fast resolver")
+    child = SimpleNamespace(
+        model="gpt-5.4", provider="openai-codex", api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex", service_tier="auto",
+        request_overrides={"service_tier": "priority"}, _fast_until=float("inf"),
+    )
+    _apply_fast_override(child, fast)
+    payload = transport.ResponsesApiTransport().build_kwargs(
+        child.model, [{"role": "user", "content": "Test request; never sent."}],
+        provider=child.provider, base_url=child.base_url, is_codex_backend=True,
+        request_overrides=windows.effective_request_overrides(child),
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+    assert payload.get("service_tier") == ("priority" if fast else None)
+    assert payload["model"] == child.model
+    assert payload["reasoning"]["effort"] == "high"
+
+
+def test_fast_rejects_proxy_using_the_real_host_gate():
+    from hermes_delegate_routing.patches import _apply_fast_override
+
+    models = pytest.importorskip("hermes_cli.models")
+    if not callable(getattr(models, "resolve_fast_mode_overrides", None)):
+        pytest.skip("host has no route-aware Fast resolver")
+    child = SimpleNamespace(
+        model="gpt-5.4", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+        service_tier=None, request_overrides={},
+    )
+    with pytest.raises(ValueError, match="unsupported"):
+        _apply_fast_override(child, True)
+    assert child.request_overrides == {}

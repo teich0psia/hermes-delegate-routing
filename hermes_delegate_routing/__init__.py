@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 _SKILL_DIRNAME = "delegate-routing"
 _SKILL_FILENAME = "SKILL.md"
-_SKILL_DESCRIPTION = "Use when routing a Hermes subagent by model/provider."
+_SKILL_DESCRIPTION = "Use when routing subagents or setting per-task Fast."
 
 
 def _skill_md_path() -> Path:

@@ -1,6 +1,6 @@
 # hermes-delegate-routing
 
-**A fork-free [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds explicit per-task `model` / `provider` / `reasoning_effort` routing to `delegate_task`.**
+**A fork-free [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds explicit per-task `model` / `provider` / `reasoning_effort` routing and optional `fast` control to `delegate_task`.**
 
 Route each subagent in a batch delegation to a different model/provider/reasoning effort:
 
@@ -71,6 +71,49 @@ delegate_task(tasks=[{"goal": "…", "model": "sonnet", "provider": "anthropic",
 the host drops top-level args before the tool runs, so only `tasks[]` fields take
 effect. This matches the recommended call shape (see [`docs/DESIGN.md`](docs/DESIGN.md)).
 
+## Optional per-task Fast mode
+
+Add `fast` inside a task without changing the existing call shape:
+
+```python
+delegate_task(tasks=[
+    {"goal": "Check the result", "model": "gpt-5.4", "provider": "openai-codex", "fast": True},
+    {"goal": "Run at normal speed", "model": "gpt-5.4", "provider": "openai-codex", "fast": False},
+    {"goal": "Use the usual delegation settings"},
+])
+```
+
+| `tasks[i].fast` | Behavior |
+|---|---|
+| omitted | Existing delegation behavior, unchanged; **not** an implicit `false` |
+| `true` | Enable Fast for this child only, if its resolved route supports it |
+| `false` | Disable Fast for this child, including inherited Fast request flags and `auto`/`cold` windows |
+
+Only JSON booleans are accepted: `null`, strings, and numbers are invalid.
+Fast never changes the parent, siblings, model, provider, reasoning effort, or
+persistent configuration. It is the host's priority/Fast request option, not a
+switch to a smaller model or lower reasoning effort. Provider billing rules still apply.
+
+Hermes' own route-aware Fast resolver decides support and request parameters
+(e.g. `service_tier: priority` for eligible OpenAI/Codex routes, `speed: fast` for
+eligible Anthropic routes). The plugin does not send those flags to unsupported
+proxies. Explicit OFF removes recognized Fast flags from copied request settings,
+including `extra_body`, while preserving unrelated settings and non-Fast tiers.
+Custom gateway-specific tier names are outside this option's scope.
+
+Under the default `delegate_routing.on_error: fail`, an unsupported Fast request
+or missing host capability fails the delegation before child execution; already
+constructed children are closed. With `on_error: fallback`, a Fast capability
+failure warns and preserves that child's pre-existing Fast settings, keeping its
+resolved model/provider/reasoning. Invalid input types are capture-time errors
+and follow the existing policy of skipping the entire task override in fallback
+mode. No Fast option is guaranteed applied in fallback mode.
+
+Fast ON requires a host with `hermes_cli.models.resolve_fast_mode_overrides`;
+explicit ON/OFF also requires child `request_overrides` and `service_tier`
+attributes. Older hosts can still use existing calls with `fast` omitted.
+No additional setting or top-level `fast` argument is introduced.
+
 ## Recovery skill
 
 The package bundles a read-only skill, registered at load as
@@ -90,7 +133,8 @@ restores the pre-patch originals via `ctx.on_unload(restore_patches)`.
 installs four narrow, idempotent runtime monkeypatches at load:
 
 1. **schema** — advertise `tasks[].model` / `tasks[].provider` /
-   `tasks[].reasoning_effort` to the model (via the registered `ToolEntry`);
+   `tasks[].reasoning_effort` / optional boolean `tasks[].fast` to the model
+   (via the registered `ToolEntry`);
 2. **capture** — wrap `delegate_task` to resolve per-task model/provider state via
    the host `/model` switch pipeline and reasoning via Hermes' `parse_reasoning_effort()`,
    then stash it by task index;

@@ -111,11 +111,11 @@ def _tool_error(msg: str, tool_error=None) -> str:
 _SKILL_REF = "delegate_routing:delegate-routing"
 _SKILL_HINT = (
     f" See skill '{_SKILL_REF}' via skill_view (per-task routing lives inside "
-    "tasks[i] only; there is no top-level model/provider/reasoning_effort argument)."
+    "tasks[i] only; there is no top-level model/provider/reasoning_effort/fast argument)."
 )
 _SKILL_FALLBACK_HINT = (
     " (bundled recovery skill not registered in this process — per-task routing "
-    "lives inside tasks[i] only; there is no top-level model/provider/reasoning_effort "
+    "lives inside tasks[i] only; there is no top-level model/provider/reasoning_effort/fast "
     "argument)."
 )
 # Keep the common repair inline: plugin skills require an explicit skill_view.
@@ -171,6 +171,16 @@ _TASK_REASONING_DESC = (
 )
 
 
+_TASK_FAST_DESC = (
+    "Optional Fast mode for THIS child only, inside tasks[i]: true enables Fast; "
+    "false disables it; omission preserves normal delegation behavior. Does not "
+    "change the parent, model, provider, or reasoning effort. Boolean only (no "
+    "null or strings). Fast must be supported by the resolved model/provider/endpoint. "
+    "A capability failure errors by default; on_error=fallback logs and retains the "
+    "child's existing Fast settings instead."
+)
+
+
 def make_schema_override(orig_builder):
     """Wrap the host schema builder to advertise per-task routing fields.
 
@@ -198,14 +208,15 @@ def make_schema_override(orig_builder):
                 "not advertising per-task routing fields"
             )
             return result
-        for _name, _desc in (
-            ("model", _TASK_MODEL_DESC),
-            ("provider", _TASK_PROVIDER_DESC),
-            ("reasoning_effort", _TASK_REASONING_DESC),
+        for _name, _type, _desc in (
+            ("model", "string", _TASK_MODEL_DESC),
+            ("provider", "string", _TASK_PROVIDER_DESC),
+            ("reasoning_effort", "string", _TASK_REASONING_DESC),
+            ("fast", "boolean", _TASK_FAST_DESC),
         ):
             _existing = props.get(_name)
             if _existing is None:
-                props[_name] = {"type": "string", "description": _desc}
+                props[_name] = {"type": _type, "description": _desc}
             elif isinstance(_existing, dict) and not _existing.get("description"):
                 _existing["description"] = _desc
         return result
@@ -253,7 +264,8 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                 has_model_provider = bool(model or provider)
                 reasoning_effort = t.get("reasoning_effort")
                 has_reasoning = "reasoning_effort" in t and reasoning_effort is not None
-                if not has_model_provider and not has_reasoning:
+                has_fast = "fast" in t
+                if not has_model_provider and not has_reasoning and not has_fast:
                     continue
                 try:
                     route = {}
@@ -267,6 +279,11 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                         route["reasoning_config"] = _resolve_reasoning_override(
                             reasoning_effort
                         )
+                    if has_fast:
+                        if not isinstance(t["fast"], bool):
+                            raise ValueError("fast must be a boolean (true or false), or omitted")
+                        route["fast"] = t["fast"]
+                        route["fast_on_error"] = on_error
                     routing[i] = route
                 except Exception as exc:
                     if on_error == "fallback":
@@ -284,6 +301,13 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                         f"{_SAME_CHAT_HINT}{_skill_pointer()} Example: {_MINIMAL_EXAMPLE}",
                         tool_error,
                     )
+        if any("fast" in route for route in routing.values()):
+            # The host constructs the entire batch before execution. Own a
+            # call-local cleanup list in case a later child rejects Fast.
+            fast_children = []
+            for i, task in enumerate(tasks):
+                if isinstance(task, dict):
+                    routing.setdefault(i, {})["_fast_batch_children"] = fast_children
         token = ROUTING.set(routing)
         try:
             return orig_delegate_task(
@@ -299,6 +323,42 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
 
 
 # --- Seam C: apply ----------------------------------------------------------
+
+
+def _apply_fast_override(child, enabled):
+    """Apply Fast to one constructed child, never to shared parent settings."""
+    for name in ("request_overrides", "service_tier"):
+        if not hasattr(child, name):
+            raise ValueError(f"Hermes Fast attribute {name!r} is unavailable on this host")
+    overrides = {}
+    if enabled:
+        try:
+            from hermes_cli.models import resolve_fast_mode_overrides
+        except ImportError as exc:
+            raise ValueError("Hermes Fast resolver is unavailable on this host") from exc
+
+        base_url = getattr(child, "base_url", None)
+        if getattr(child, "api_mode", None) == "anthropic_messages":
+            base_url = getattr(child, "_anthropic_base_url", None) or base_url
+        overrides = resolve_fast_mode_overrides(
+            child.model, provider=child.provider, base_url=base_url,
+        )
+        if not overrides:
+            raise ValueError("Requested fast=True is unsupported for this child route")
+
+    request_overrides = copy.deepcopy(child.request_overrides or {})
+    # Remove inherited Fast flags in both SDK kwargs and extra_body. Keep
+    # unrelated provider settings (including non-Fast service tiers) untouched.
+    for values in (request_overrides, request_overrides.get("extra_body")):
+        if isinstance(values, dict):
+            if values.get("service_tier") == "priority" or "service_tier" in overrides:
+                values.pop("service_tier", None)
+            if values.get("speed") == "fast" or "speed" in overrides:
+                values.pop("speed", None)
+    request_overrides.update(overrides)
+    child.request_overrides = request_overrides
+    # Explicit OFF also disables the host's auto/cold Fast window.
+    child.service_tier = "priority" if enabled else None
 
 def make_build_child_wrapper(orig_build_child):
     """Wrap ``_build_child_agent`` to inject per-task creds keyed by task_index.
@@ -343,6 +403,10 @@ def make_build_child_wrapper(orig_build_child):
             override_acp_args=override_acp_args, role=role, **extra,
         )
 
+        fast_children = creds.get("_fast_batch_children") if creds else None
+        if fast_children is not None:
+            fast_children.append(child)
+
         # The host resolves delegation.reasoning_effort > parent while building
         # the child. Apply a task-local override afterwards, so omission preserves
         # that native precedence and provider-specific wire translation remains
@@ -357,6 +421,28 @@ def make_build_child_wrapper(orig_build_child):
                 logger.warning(msg)
                 raise ValueError(msg)
             child.reasoning_config = dict(creds["reasoning_config"])
+        if creds and "fast" in creds:
+            try:
+                _apply_fast_override(child, creds["fast"])
+            except ValueError as exc:
+                msg = f"delegate-routing: task {task_index} fast override failed: {_redact(exc)}"
+                if creds.get("fast_on_error") == "fallback":
+                    # Route/reasoning have already resolved. Skip only Fast;
+                    # never reroute a constructed child or mutate its defaults.
+                    logger.warning("%s; keeping the child's existing Fast settings", msg)
+                else:
+                    for rejected in fast_children if fast_children is not None else [child]:
+                        close = getattr(rejected, "close", None)
+                        if callable(close):
+                            try:
+                                close()
+                            except Exception:
+                                logger.debug("Could not close rejected Fast child", exc_info=True)
+                    if fast_children is not None:
+                        fast_children.clear()
+                    raise ValueError(msg) from exc
+            else:
+                logger.info("delegate-routing: task %d fast=%s applied", task_index, creds["fast"])
         return child
 
     _wrapped.__dict__["_hdr_delegate_routing_apply"] = True

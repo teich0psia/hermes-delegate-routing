@@ -209,6 +209,19 @@ def test_bundled_skill_files_exist():
     assert "tasks" in text
 
 
+def test_bundled_fast_skill_matches_registration_and_gates_runtime_readiness():
+    from hermes_delegate_routing import _SKILL_DESCRIPTION, _skill_md_path
+
+    text = _skill_md_path().read_text(encoding="utf-8")
+    description = re.search(r'^description: "([^"]+)"$', text, re.MULTILINE).group(1)
+    assert _SKILL_DESCRIPTION == description
+    assert "Fast" in description
+    assert len(description) <= 60
+    assert description.endswith(".")
+    for required in ("tasks[i].fast", "schema", "restart", "omission is not OFF"):
+        assert required in text
+
+
 def test_register_with_fake_ctx_registers_skill_with_description():
     import hermes_delegate_routing.patches as _p
     from hermes_delegate_routing import _register_bundled_skill
