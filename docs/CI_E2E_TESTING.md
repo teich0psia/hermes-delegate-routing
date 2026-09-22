@@ -66,7 +66,11 @@ real parent `AIAgent`, activate the plugin, patch `run_agent.OpenAI` with a
 recording fake, mock the `switch_model` catalog boundary to two distinct bundles,
 call `delegate_task(tasks=[{…m1…},{…m2…}], background=False)`, and assert both routed `base_url`/`model` pairs reach the client boundary. A second
 case pins distinct task reasoning efforts and asserts they reach Hermes' normal
-reasoning request payload. Deterministic, no network.
+reasoning request payload. Fast cases use a real parent/child delegation loop
+with mixed ON/OFF/omitted values and inherited Fast both enabled and disabled.
+They verify the SDK `service_tier`, unchanged parent state, native Codex request
+assembly, and rejection of unsupported proxies using the host's own Fast gate.
+Fast tests skip on hosts lacking the relevant capability. Deterministic, no network.
 
 **Tier 2:** as Tier 1 but point `custom_providers.base_url` at a local
 `BaseHTTPRequestHandler` (or a proxy) that records `(path, model)` and returns a

@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Optional per-task `fast` boolean: ON/OFF affects only the selected child;
+  omission preserves existing delegation behavior and call shapes.
+- Reuse Hermes' route-aware Fast resolver; preserve model/provider/reasoning
+  settings and reject unsupported routes by default. Explicit OFF removes
+  inherited Fast flags without changing shared parent/sibling dictionaries.
+- Unit coverage for mixed batches, boolean validation, unsupported/missing-host
+  handling, fallback, and rejected-batch cleanup. Offline host-backed tests cover
+  actual SDK request parameters, Codex transport assembly, and proxy rejection.
+
+### Fixed
+
+- A rejected Fast batch now detaches its closed children from the parent as well
+  as closing them, and an apply failure of any exception class is normalized onto
+  the host's `ValueError` path — a drifted host can no longer strand a half-built,
+  still-attached batch.
+- Fast failures name the affected child's resolved model/provider, and an invalid
+  `fast` value reports the offending value instead of the model/provider repair hint.
+- Docs/skill: the `auto`/`cold` clause is described as defensive (current hosts
+  build children without a bounded Fast mode), and a test now pins the documented
+  `fast=<bool> applied` application line. Coverage added for provider-only tasks,
+  an explicit-route SDK-boundary run, mixed valid/invalid batches, fallback with an
+  invalid type, non-mapping `request_overrides`, and non-Fast tier preservation on OFF.
+
 ## 0.3.2 — 2026-09-18
 
 ### Changed
