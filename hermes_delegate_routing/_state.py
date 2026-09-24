@@ -21,6 +21,13 @@ ROUTING: contextvars.ContextVar[dict[int, dict] | None] = contextvars.ContextVar
 )
 
 
+# Only a nonempty batch whose EVERY route is explicitly pinned and resolved
+# can skip baseline authentication. Kept call-local for multiplexed profiles.
+BASELINE_INDEPENDENT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "hermes_delegate_routing_baseline_independent", default=False
+)
+
+
 def get_creds(task_index: int) -> dict | None:
     """Return resolved creds for a task index, or None if not routed."""
     routing = ROUTING.get()

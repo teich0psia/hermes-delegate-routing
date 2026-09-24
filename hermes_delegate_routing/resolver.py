@@ -148,6 +148,12 @@ def resolve_model_provider_override(
         "max_output_tokens": None,
         "command": None,
         "args": [],
+        # Record provenance before inheritance is lost in the resolved bundle.
+        # Model-only/provider-only overrides still require baseline preflight.
+        "_fully_explicit": bool(
+            parsed_model and (explicit_provider or parsed_provider)
+            and result.new_model and result.target_provider
+        ),
     }
 
     # Preserve runtime-provider metadata switch_model does not expose directly,

@@ -9,10 +9,12 @@ host resolving the patched module attr), so capture+apply are exercised together
 from __future__ import annotations
 
 import json
+from contextvars import Context
 
 from hermes_delegate_routing import _state
 from hermes_delegate_routing.patches import (
     make_build_child_wrapper,
+    make_credentials_wrapper,
     make_delegate_task_wrapper,
 )
 
@@ -29,6 +31,7 @@ def _fake_resolver(model_input=None, provider_input=None, parent_agent=None):
         "api_mode": None,
         "command": None,
         "args": [],
+        "_fully_explicit": bool(model_input and provider_input),
     }
 
 
@@ -141,15 +144,21 @@ def test_fallback_uses_batch_creds_and_still_delegates():
 
 
 def test_routing_reset_even_if_host_raises():
+    preflight = make_credentials_wrapper(lambda cfg, parent_agent: "baseline")
+
     def host(**kw):
+        assert _state.BASELINE_INDEPENDENT.get() is True
+        assert preflight({}, None)["provider"] is None
+        assert Context().run(preflight, {}, None) == "baseline"
         raise RuntimeError("host blew up")
 
     wrapped_delegate = make_delegate_task_wrapper(host, _fake_resolver, on_error="fail")
     try:
-        wrapped_delegate(tasks=[{"goal": "a", "model": "m1"}], parent_agent=None)
+        wrapped_delegate(tasks=[{"goal": "a", "model": "m1", "provider": "p1"}], parent_agent=None)
     except RuntimeError:
         pass
     assert not _state.ROUTING.get()
+    assert _state.BASELINE_INDEPENDENT.get() is False
 
 
 def test_build_child_wrapper_forwards_unknown_future_kwarg():

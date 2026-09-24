@@ -1,9 +1,9 @@
 """The monkeypatch seams.
 
-Four narrow wrappers over Hermes runtime seams (see docs/DESIGN.md §6):
+Five narrow wrappers over four Hermes runtime seams (see docs/DESIGN.md §6):
 
   A. schema  — advertise per-task model/provider/reasoning fields to the LLM
-  B. capture — resolve per-task routing state and stash it by task_index
+  B. capture — resolve per-task routing; skip baseline auth only if unused
   C. apply   — inject stashed routing into each ``_build_child_agent`` call
   D. display — make async completion metadata report the actual child model(s)
 
@@ -23,7 +23,7 @@ import re
 import sys
 import threading
 
-from ._state import ROUTING, get_creds
+from ._state import BASELINE_INDEPENDENT, ROUTING, get_creds
 from .resolver import resolve_model_provider_override
 
 logger = logging.getLogger(__name__)
@@ -253,7 +253,7 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
     ``model`` / ``provider`` are resolved through the host ``/model`` pipeline.
     Explicit ``reasoning_effort`` is parsed through the host reasoning chokepoint.
     The resulting state is keyed by task index for the apply seam to consume.
-    The original is then called unchanged; ROUTING is always reset afterwards.
+    The original is then called unchanged; call-local state is reset afterwards.
 
     ``on_error``: 'fail' (default) → return a tool error and do not delegate;
     'fallback' → skip the failed override (child uses batch/config routing) and log.
@@ -325,7 +325,12 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
             for i, task in enumerate(tasks):
                 if isinstance(task, dict):
                     routing.setdefault(i, {})["_fast_batch_children"] = fast_children
+        independent = bool(tasks) and isinstance(tasks, list) and all(
+            routing.get(i, {}).get("_fully_explicit", False)
+            for i in range(len(tasks))
+        )
         token = ROUTING.set(routing)
+        baseline_token = BASELINE_INDEPENDENT.set(independent)
         try:
             return orig_delegate_task(
                 goal=goal, context=context, tasks=tasks,
@@ -333,9 +338,32 @@ def make_delegate_task_wrapper(orig_delegate_task, resolver, on_error="fail", to
                 background=background, parent_agent=parent_agent, **extra,
             )
         finally:
+            BASELINE_INDEPENDENT.reset(baseline_token)
             ROUTING.reset(token)
 
     _wrapped.__dict__["_hdr_delegate_routing_capture"] = True
+    return _wrapped
+
+
+def make_credentials_wrapper(orig_resolve):
+    """Skip UNUSED baseline auth, not failures of routes that children need.
+
+    Never seed the batch from the first task: nullable fields in a later route
+    must not inherit a sibling's credentials/transport/personality. An empty
+    bundle is safe only after capture proved every task owns a complete route.
+    The host still owns validation, limits, and the unchanged routing_cfg's
+    fallback policy. No config or process-global auth resolver is mutated.
+    """
+    def _wrapped(cfg, parent_agent, **extra):
+        if BASELINE_INDEPENDENT.get():
+            return {
+                "model": None, "provider": None, "base_url": None,
+                "api_key": None, "api_mode": None, "command": None,
+                "args": [], "request_overrides": None,
+            }
+        return orig_resolve(cfg, parent_agent, **extra)
+
+    _wrapped.__dict__["_hdr_delegate_routing_credentials"] = True
     return _wrapped
 
 
@@ -788,6 +816,7 @@ def _snapshot_for_restore(dt, registry_entry) -> None:
             "taken": True,
             "delegate_task": dt.delegate_task,
             "build_child": dt._build_child_agent,
+            "credentials": dt._resolve_delegation_credentials,
             "schema_builder": getattr(registry_entry, "dynamic_schema_overrides", None)
             if registry_entry is not None
             else None,
@@ -827,6 +856,8 @@ def restore_patches() -> None:
             dt.delegate_task = _RESTORE_STATE["delegate_task"]
         if getattr(dt._build_child_agent, "_hdr_delegate_routing_apply", False):
             dt._build_child_agent = _RESTORE_STATE["build_child"]
+        if getattr(dt._resolve_delegation_credentials, "_hdr_delegate_routing_credentials", False):
+            dt._resolve_delegation_credentials = _RESTORE_STATE["credentials"]
         _entry = _RESTORE_STATE.get("entry")
         if _entry is not None:
             _current_builder = getattr(_entry, "dynamic_schema_overrides", None)
@@ -885,6 +916,7 @@ def apply_patches() -> bool:
         try:
             dt_params = _params(dt.delegate_task)
             bc_params = _params(dt._build_child_agent)
+            credentials_params = _params(dt._resolve_delegation_credentials)
         except Exception as exc:
             logger.warning(
                 "delegate-routing: cannot introspect host functions; not patching: %s", exc,
@@ -894,13 +926,14 @@ def apply_patches() -> bool:
         schema_builder = getattr(dt, "_build_dynamic_schema_overrides", None)
         missing_dt = _EXPECTED_DELEGATE_PARAMS - dt_params
         missing_bc = _EXPECTED_BUILD_CHILD_PARAMS - bc_params
-        if missing_dt or missing_bc or not callable(schema_builder):
+        missing_credentials = {"cfg", "parent_agent"} - credentials_params
+        if missing_dt or missing_bc or missing_credentials or not callable(schema_builder):
             logger.warning(
                 "delegate-routing: host signature mismatch — NOT patching. "
                 "delegate_task missing=%s, _build_child_agent missing=%s, "
-                "schema_builder=%r. This hermes-agent version may be unsupported; "
+                "credentials missing=%s, schema_builder=%r. This hermes-agent version may be unsupported; "
                 "see docs/DESIGN.md §10.",
-                sorted(missing_dt), sorted(missing_bc), schema_builder,
+                sorted(missing_dt), sorted(missing_bc), sorted(missing_credentials), schema_builder,
             )
             return False
 
@@ -926,6 +959,9 @@ def apply_patches() -> bool:
                 on_error=on_error, tool_error=tool_error,
             )
             dt._build_child_agent = make_build_child_wrapper(dt._build_child_agent)
+            dt._resolve_delegation_credentials = make_credentials_wrapper(
+                dt._resolve_delegation_credentials
+            )
         except Exception as exc:
             logger.warning(
                 "delegate-routing: seam B/C install failed — restoring originals: %s", exc
@@ -943,6 +979,7 @@ def apply_patches() -> bool:
         dt._HDR_PATCHED = True
         logger.info(
             "delegate-routing: active — patched delegate_task, _build_child_agent, "
+            "baseline credential preflight, "
             "delegate schema, and async model display=%s for model/provider/reasoning "
             "routing (on_error=%s)",
             display_patched, on_error,

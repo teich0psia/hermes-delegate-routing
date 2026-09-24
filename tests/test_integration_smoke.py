@@ -19,14 +19,16 @@ registry_mod = pytest.importorskip("tools.registry", reason="no hermes-agent hos
 
 
 def test_apply_patches_against_real_host():
-    from hermes_delegate_routing.patches import apply_patches
+    from hermes_delegate_routing.patches import apply_patches, restore_patches
 
     orig_delegate = dt.delegate_task
     orig_build = dt._build_child_agent
+    orig_credentials = dt._resolve_delegation_credentials
 
     assert apply_patches() is True, "plugin should activate on a supported host"
     assert dt.delegate_task is not orig_delegate, "capture seam (B) not installed"
     assert dt._build_child_agent is not orig_build, "apply seam (C) not installed"
+    assert dt._resolve_delegation_credentials is not orig_credentials
 
     # Seam A: the real ToolEntry now advertises the per-task fields.
     entry = registry_mod.registry.get_entry("delegate_task")
@@ -38,6 +40,10 @@ def test_apply_patches_against_real_host():
     wrapped = dt.delegate_task
     assert apply_patches() is True
     assert dt.delegate_task is wrapped, "second apply must not re-wrap"
+    restore_patches()
+    assert dt.delegate_task is orig_delegate
+    assert dt._build_child_agent is orig_build
+    assert dt._resolve_delegation_credentials is orig_credentials
 
 
 def test_async_display_against_real_host():

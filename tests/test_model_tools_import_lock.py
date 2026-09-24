@@ -78,6 +78,7 @@ def _install_fake_host(monkeypatch):
     dt = types.ModuleType("tools.delegate_tool")
     dt.delegate_task = delegate_task
     dt._build_child_agent = _build_child_agent
+    dt._resolve_delegation_credentials = lambda cfg, parent_agent: {}
     dt._build_dynamic_schema_overrides = _build_dynamic_schema_overrides
     dt.tool_error = tool_error
 

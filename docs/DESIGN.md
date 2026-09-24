@@ -114,9 +114,9 @@ construction.
 
 ## 6. Design — four seams
 
-The plugin installs four narrow runtime patches once, idempotently, in
+The plugin installs five narrow wrappers across four seams once, idempotently, in
 `register(ctx)`. Seams A–C handle routing; seam D is display-only. Because the host
-resolves `delegate_task`, `_build_child_agent`, and the async formatter as module
+resolves `delegate_task`, `_resolve_delegation_credentials`, `_build_child_agent`, and the async formatter as module
 globals at call time, rebinding those attributes reaches the active call paths.
 
 - **A — schema.** Wrap the tool's `dynamic_schema_overrides` builder to advertise
@@ -134,6 +134,18 @@ globals at call time, rebinding those attributes reaches the active call paths.
   when seam C fires
   — including for `background=True` delegations (only child *execution* is
   deferred, not construction).
+  **Baseline preflight:** the host resolves shared credentials before constructing
+  any child. A second capture-side wrapper on `_resolve_delegation_credentials`
+  returns a neutral credential bundle only when every task in a nonempty batch
+  has a successfully resolved, explicitly supplied model **and** provider (inline
+  `--provider` counts). The resolver records this provenance before inheritance.
+  Mixed, model-only, provider-only, and fallback-skipped overrides still use the
+  original preflight, including its failures. A separate call-local `ContextVar`
+  carries this decision and resets in `finally`; no config or auth state changes.
+  Never use the first task's bundle as the baseline: nullable fields of another
+  task could otherwise inherit a sibling's credentials or transport. The host's
+  unchanged `routing_cfg` still owns fallback policy; reasoning/Fast stay on their
+  existing paths. The credentials seam is signature-checked and restored on unload.
 - **C — apply.** Wrap `_build_child_agent`: look up the stashed route by
   `task_index` and override `model`/`override_*` before calling the original. After
   Hermes constructs the child normally, apply an explicit task `reasoning_effort`

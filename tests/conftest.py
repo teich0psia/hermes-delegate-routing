@@ -130,6 +130,10 @@ def _restore_host_delegate_state():
 
     saved_delegate = dt.delegate_task
     saved_build_child = dt._build_child_agent
+    saved_credentials = dt._resolve_delegation_credentials
+    from hermes_delegate_routing import patches
+    saved_restore_state = dict(patches._RESTORE_STATE)
+    patches._RESTORE_STATE.clear()
     had_flag = hasattr(dt, "_HDR_PATCHED")
     saved_flag = getattr(dt, "_HDR_PATCHED", None)
 
@@ -167,6 +171,9 @@ def _restore_host_delegate_state():
     finally:
         dt.delegate_task = saved_delegate
         dt._build_child_agent = saved_build_child
+        dt._resolve_delegation_credentials = saved_credentials
+        patches._RESTORE_STATE.clear()
+        patches._RESTORE_STATE.update(saved_restore_state)
         if had_flag:
             dt._HDR_PATCHED = saved_flag
         elif hasattr(dt, "_HDR_PATCHED"):
