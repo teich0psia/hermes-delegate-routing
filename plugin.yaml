@@ -1,0 +1,3 @@
+name: delegate_routing
+version: 0.3.2
+description: Explicit per-task model, provider and reasoning routing for delegate_task.
