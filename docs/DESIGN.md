@@ -103,7 +103,8 @@ Facts about the host that dictate the approach (originally verified against
    and `override_provider/base_url/api_key/api_mode/...`. It receives only
    `task_index`, not the task dict — so per-task creds must be correlated by index.
 5. **The resolver reuses public host functions** — `hermes_cli.model_switch`
-   (`parse_model_flags`, `switch_model`), `hermes_cli.config.load_config`,
+   (`parse_model_flags_detailed`, with the legacy `parse_model_flags` tuple as a
+   fallback for older hosts, and `switch_model`), `hermes_cli.config.load_config`,
    `hermes_cli.runtime_provider.resolve_runtime_provider` — no new primitives.
 
 **Implication:** the only routing channel that reaches the tool is `tasks[i]`; the
@@ -266,14 +267,19 @@ still owns provider support, wire formatting, and any later provider fallback.
 The core cost of this approach is dependence on host internals
 (`delegate_task`, `_build_child_agent`, `_build_dynamic_schema_overrides`,
 the async completion formatter (`tools.process_registry_notifications`, legacy
-`tools.process_registry`), `parse_model_flags`,
+`tools.process_registry`), `parse_model_flags_detailed` (legacy
+`parse_model_flags` fallback),
 `parse_reasoning_effort`, `_strip_model_hidden_task_fields`). Mitigations:
 
 - **Signature guard** at patch time turns host drift into a safe no-op with a loud
   log, not a crash.
 - **Arity-transparent wrappers** (`**kwargs`, keyword forwarding) tolerate the host
-  *adding* a parameter; the resolver reads `parse_model_flags` positionally to
-  tolerate its return tuple growing.
+  *adding* a parameter; the resolver reads the legacy `parse_model_flags` tuple
+  positionally to tolerate its return tuple growing, and selects the `/model` flag
+  parser by capability (structured first) so removing the legacy wrapper does not
+  break routing. A host exposing neither callable fails with an explicit error;
+  failures from a selected parser propagate rather than silently selecting another.
+  This absorbs the `parse_model_flags` removal in host commit `71fe5fcc`.
 - **Pinned, tested host versions** (see `CHANGELOG.md` / README support table).
 - **Future work:** if the host ships native per-task routing, add an explicit
   capability check and no-op rather than layering these routing seams on top.
@@ -300,4 +306,7 @@ the async completion formatter (`tools.process_registry_notifications`, legacy
   `dynamic_schema_overrides` consumed in `get_definitions`.
 - `hermes_cli/plugins.py` — entry-point discovery (`hermes_agent.plugins`).
 - `hermes_cli/model_switch.py` — `switch_model` (pure resolver; `is_global` gates
-  persistence, which this plugin never requests), `parse_model_flags`.
+  persistence, which this plugin never requests), `parse_model_flags_detailed`
+  (the structured parser; the 5-tuple `parse_model_flags` wrapper that delegated
+  to it was removed upstream in `71fe5fcc`, and remains supported here only
+  as a capability-detected fallback for older hosts).

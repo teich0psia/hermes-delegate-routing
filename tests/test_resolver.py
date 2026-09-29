@@ -7,12 +7,42 @@ attributes either way.
 
 from __future__ import annotations
 
+import contextlib
+import sys
+import types
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from hermes_delegate_routing.resolver import resolve_model_provider_override
+
+
+@contextlib.contextmanager
+def _stub_model_switch(*, switch_model=None, parsed=None, **parsers):
+    """Install a controlled ``hermes_cli.model_switch`` for one resolution call.
+
+    Lets a test describe the host's parser surface exactly — structured only,
+    legacy only, both, or neither — independently of whichever host happens to be
+    importable in this run. ``parsed`` is sugar for a structured parser returning
+    that ``model_input`` / ``explicit_provider`` pair.
+    """
+    import hermes_cli
+
+    stub = types.ModuleType("hermes_cli.model_switch")
+    fields = dict(parsers)
+    if switch_model is not None:
+        fields["switch_model"] = switch_model
+    if parsed is not None:
+        fields["parse_model_flags_detailed"] = lambda raw: SimpleNamespace(
+            model_input=parsed.get("model_input", ""),
+            explicit_provider=parsed.get("explicit_provider", ""),
+        )
+    vars(stub).update(fields)
+    with patch.object(hermes_cli, "model_switch", stub), patch.dict(
+        sys.modules, {"hermes_cli.model_switch": stub}
+    ):
+        yield stub
 
 
 def _parent():
@@ -102,22 +132,159 @@ def test_switch_model_failure_raises():
 
 
 def test_tolerates_parse_model_flags_arity_growth():
-    """Regression: host parse_model_flags gained a 5th return value (is_session);
-    the resolver must read only elements [0]/[1] and ignore the growing tail."""
-    with patch(
-        "hermes_cli.model_switch.parse_model_flags",
-        return_value=("m", "", 0, 0, 0, "future"),
+    """Regression: legacy host parse_model_flags gained a 5th return value
+    (is_session); the legacy fallback must read only elements [0]/[1] and ignore
+    the growing tail."""
+    with _stub_model_switch(
+        switch_model=lambda **kw: _switch_result(new_model="m", target_provider="anthropic"),
+        parse_model_flags=lambda raw: ("m", "", 0, 0, 0, "future"),
     ), patch("hermes_cli.config.load_config", return_value={}), patch(
-        "hermes_cli.model_switch.switch_model"
-    ) as mock_switch, patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         return_value={"command": None, "args": []},
     ):
-        mock_switch.return_value = _switch_result(new_model="m", target_provider="anthropic")
         creds = resolve_model_provider_override(
             model_input="m", provider_input=None, parent_agent=_parent()
         )
     assert creds["model"] == "m"
+
+
+def test_prefers_structured_parser_when_host_exposes_both():
+    """Modern hosts expose parse_model_flags_detailed; the legacy tuple wrapper is
+    ignored even when present."""
+    legacy = MagicMock(side_effect=AssertionError("legacy parser must not be used"))
+    detailed = MagicMock(
+        return_value=SimpleNamespace(model_input="m", explicit_provider="openrouter")
+    )
+    switch = MagicMock(
+        return_value=_switch_result(new_model="m", target_provider="openrouter")
+    )
+    with _stub_model_switch(
+        switch_model=switch,
+        parse_model_flags_detailed=detailed,
+        parse_model_flags=legacy,
+    ), patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={"command": None, "args": []},
+    ):
+        creds = resolve_model_provider_override(
+            model_input="m --provider openrouter",
+            provider_input=None,
+            parent_agent=_parent(),
+        )
+
+    detailed.assert_called_once_with("m --provider openrouter")
+    legacy.assert_not_called()
+    assert creds["model"] == "m"
+    assert creds["provider"] == "openrouter"
+    assert switch.call_args.kwargs["explicit_provider"] == "openrouter"
+
+
+def test_structured_parser_only_host_resolves_inline_provider():
+    """Modern-only host (the installed shape): no parse_model_flags at all."""
+    with _stub_model_switch(
+        switch_model=lambda **kw: _switch_result(
+            new_model="stepfun/step-3.5-flash", target_provider="openrouter"
+        ),
+        parsed={
+            "model_input": "stepfun/step-3.5-flash",
+            "explicit_provider": "openrouter",
+        },
+    ), patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={"command": None, "args": []},
+    ):
+        creds = resolve_model_provider_override(
+            model_input="stepfun/step-3.5-flash --provider openrouter",
+            provider_input=None,
+            parent_agent=_parent(),
+        )
+    assert creds["model"] == "stepfun/step-3.5-flash"
+    assert creds["provider"] == "openrouter"
+
+
+def test_legacy_tuple_only_host_still_resolves():
+    """Older host: only the tuple parser exists (structured result absent)."""
+    seen = {}
+
+    def legacy(raw):
+        seen["raw"] = raw
+        return ("glm-5", "openrouter", False, False, False)
+
+    switch = MagicMock(
+        return_value=_switch_result(new_model="glm-5", target_provider="openrouter")
+    )
+    with _stub_model_switch(
+        switch_model=switch, parse_model_flags=legacy
+    ), patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={"command": None, "args": []},
+    ):
+        creds = resolve_model_provider_override(
+            model_input="glm-5 --provider openrouter",
+            provider_input=None,
+            parent_agent=_parent(),
+        )
+
+    assert seen["raw"] == "glm-5 --provider openrouter"
+    assert creds["model"] == "glm-5"
+    assert switch.call_args.kwargs["raw_input"] == "glm-5"
+    assert switch.call_args.kwargs["explicit_provider"] == "openrouter"
+
+
+def test_host_without_any_parser_fails_clearly():
+    """Neither parser present: fail with a message naming both, not a raw
+    AttributeError from an unrelated lookup."""
+    with _stub_model_switch(
+        switch_model=lambda **kw: _switch_result()
+    ), pytest.raises(ValueError) as ctx:
+        resolve_model_provider_override(
+            model_input="m", provider_input=None, parent_agent=_parent()
+        )
+    message = str(ctx.value)
+    assert "parse_model_flags_detailed" in message
+    assert "parse_model_flags" in message
+
+
+def test_selected_parser_failure_propagates_without_fallback():
+    """A present structured parser that raises must not silently fall back to the
+    legacy parser: a host bug would otherwise become a plausible wrong route."""
+    def boom(raw):
+        raise RuntimeError("structured parser exploded")
+
+    legacy = MagicMock(side_effect=AssertionError("legacy parser must not be used"))
+    with _stub_model_switch(
+        switch_model=lambda **kw: _switch_result(),
+        parse_model_flags_detailed=boom,
+        parse_model_flags=legacy,
+    ), pytest.raises(RuntimeError, match="structured parser exploded"):
+        resolve_model_provider_override(
+            model_input="m", provider_input=None, parent_agent=_parent()
+        )
+    legacy.assert_not_called()
+
+
+def test_malformed_structured_result_fails_loudly_without_fallback():
+    """A structured result missing a required field is a malformed host parser.
+
+    It must raise (direct attribute access, like the removed upstream wrapper) —
+    never degrade into an inherited route, and never silently fall back to the
+    legacy parser. Mirrors "model field absent + structured provider supplied".
+    """
+    class _MissingModelField:
+        explicit_provider = "openrouter"
+
+    legacy = MagicMock(side_effect=AssertionError("legacy parser must not be used"))
+    switch = MagicMock(side_effect=AssertionError("switch_model must not be called"))
+    with _stub_model_switch(
+        switch_model=switch,
+        parse_model_flags_detailed=lambda raw: _MissingModelField(),
+        parse_model_flags=legacy,
+    ), pytest.raises(AttributeError):
+        resolve_model_provider_override(
+            model_input="m", provider_input=None, parent_agent=_parent()
+        )
+    switch.assert_not_called()
+    legacy.assert_not_called()
 
 
 def test_model_only_same_provider_takes_effect():

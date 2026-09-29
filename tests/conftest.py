@@ -27,7 +27,7 @@ def _install_fake_hermes_cli() -> None:
     except Exception:
         pass
 
-    def _fake_parse_model_flags(raw):
+    def _fake_parse_model_flags_detailed(raw):
         raw = raw or ""
         provider = ""
         model = raw
@@ -36,9 +36,13 @@ def _install_fake_hermes_cli() -> None:
             tail = tail.strip()
             provider = tail.split()[0] if tail else ""
             model = head.strip()
-        # Mirror the current host: 5-tuple (model, provider, is_global,
-        # force_refresh, is_session). Resolver reads only [0] and [1].
-        return (model.strip(), provider, False, False, False)
+        # Mirror the CURRENT host: the structured parser returns a result object
+        # and the legacy ``parse_model_flags`` tuple wrapper it used to delegate
+        # to was removed upstream (hermes-agent 71fe5fcc). Resolver coverage for
+        # the legacy-only host shape lives in tests/test_resolver.py.
+        return types.SimpleNamespace(
+            model_input=model.strip(), explicit_provider=provider
+        )
 
     def _fake_switch_model(**kwargs):  # must be patched by tests that reach it
         raise AssertionError("switch_model must be patched in tests")
@@ -52,7 +56,7 @@ def _install_fake_hermes_cli() -> None:
     pkg = types.ModuleType("hermes_cli")
     pkg.__path__ = []  # mark as package
     ms = types.ModuleType("hermes_cli.model_switch")
-    ms.parse_model_flags = _fake_parse_model_flags
+    ms.parse_model_flags_detailed = _fake_parse_model_flags_detailed
     ms.switch_model = _fake_switch_model
     cfg = types.ModuleType("hermes_cli.config")
     cfg.load_config = _fake_load_config

@@ -93,13 +93,33 @@ def test_async_display_against_real_host():
     assert "stale-batch-model" not in rendered
 
 
-def test_resolver_against_real_parse_model_flags():
-    """Resolver reads model/provider through the real parse_model_flags (arity may
-    differ across host versions); switch_model is mocked so there's no network."""
+def test_resolver_against_real_host_model_parser():
+    """Resolver reads model/provider through the REAL host flag parser.
+
+    The host removed the legacy 5-tuple ``parse_model_flags`` (upstream 71fe5fcc)
+    and keeps the structured ``parse_model_flags_detailed``; this asserts the
+    resolver works against whatever the installed host exposes without mocking the
+    parser. ``switch_model`` is mocked so there's no network.
+    """
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from hermes_delegate_routing.resolver import resolve_model_provider_override
+    from hermes_cli import model_switch
+
+    from hermes_delegate_routing.resolver import (
+        _parse_model_input,
+        resolve_model_provider_override,
+    )
+
+    structured = callable(getattr(model_switch, "parse_model_flags_detailed", None))
+    legacy = callable(getattr(model_switch, "parse_model_flags", None))
+    assert structured or legacy, "host exposes no /model flag parser"
+    # The parser the resolver picks must be the structured one on this host.
+    if structured:
+        assert _parse_model_input(model_switch, "glm-5 --provider openrouter") == (
+            "glm-5",
+            "openrouter",
+        )
 
     with patch(
         "hermes_cli.model_switch.switch_model",

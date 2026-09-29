@@ -15,6 +15,16 @@
 
 ### Fixed
 
+- Explicit per-task `model`/`provider` routing no longer breaks on hosts that
+  removed the legacy `parse_model_flags` tuple wrapper (hermes-agent `71fe5fcc`):
+  the resolver now prefers the structured `parse_model_flags_detailed` result
+  (`model_input` / `explicit_provider`) and falls back to the legacy tuple only
+  when that callable is absent — capability detection, never host version
+  strings, and an invocation failure of a present parser propagates instead of
+  silently switching parsers. A host exposing neither parser fails with an
+  explicit "neither … nor …" error instead of a misleading import message.
+  Verified against the installed host `99721dca80` (resolver, integration smoke,
+  Tier-1 SDK-boundary, Fast, and baseline-preflight tests).
 - A rejected Fast batch now detaches its closed children from the parent as well
   as closing them, and an apply failure of any exception class is normalized onto
   the host's `ValueError` path — a drifted host can no longer strand a half-built,

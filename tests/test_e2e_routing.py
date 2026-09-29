@@ -88,6 +88,34 @@ def _fake_switch_model(*, raw_input, **kwargs):
     )
 
 
+def _fake_parse_model_flags(raw):
+    """Stand in for the host ``/model`` flag parser: literal model text, no flags."""
+    return SimpleNamespace(model_input=(raw or "").strip(), explicit_provider="")
+
+
+def _patch_model_flag_parser():
+    """Patch whichever ``/model`` flag parser this host exposes.
+
+    The current host has only the structured ``parse_model_flags_detailed``; an
+    older host has only the legacy 5-tuple ``parse_model_flags``. Selecting by
+    capability (with ``create=True`` so the target may legitimately be absent)
+    keeps these host-backed fixtures runnable on either shape.
+    """
+    from hermes_cli import model_switch
+
+    if callable(getattr(model_switch, "parse_model_flags_detailed", None)):
+        return patch(
+            "hermes_cli.model_switch.parse_model_flags_detailed",
+            side_effect=_fake_parse_model_flags,
+            create=True,
+        )
+    return patch(
+        "hermes_cli.model_switch.parse_model_flags",
+        side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
+        create=True,
+    )
+
+
 def _no_tool_response(**_kwargs):
     """A minimal chat-completion with no tool calls → the child exits after one call."""
     msg = MagicMock()
@@ -131,10 +159,9 @@ def test_per_task_model_provider_reaches_the_client():
         client.close = MagicMock()
         return client
 
-    with patch("hermes_cli.model_switch.switch_model", side_effect=_fake_switch_model), patch(
-        "hermes_cli.model_switch.parse_model_flags",
-        side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
-    ), _patch_client_ctor(_recording_openai), patch.object(
+    with patch(
+        "hermes_cli.model_switch.switch_model", side_effect=_fake_switch_model
+    ), _patch_model_flag_parser(), _patch_client_ctor(_recording_openai), patch.object(
         run_agent.AIAgent, "_build_system_prompt", return_value="You are a test agent"
     ):
         parent = run_agent.AIAgent(
@@ -220,10 +247,9 @@ def test_per_task_reasoning_effort_reaches_the_request_boundary():
             requested=requested, target_model=target_model, **kwargs
         )
 
-    with patch("hermes_cli.model_switch.switch_model", side_effect=_fake_switch_model), patch(
-        "hermes_cli.model_switch.parse_model_flags",
-        side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
-    ), patch(
+    with patch(
+        "hermes_cli.model_switch.switch_model", side_effect=_fake_switch_model
+    ), _patch_model_flag_parser(), patch(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         side_effect=_selective_resolve,
     ), _patch_client_ctor(_recording_openai), patch.object(
@@ -427,10 +453,9 @@ def test_fast_with_an_explicit_route_reaches_the_sdk_boundary():
         client.close = MagicMock()
         return client
 
-    with patch("hermes_cli.model_switch.switch_model", side_effect=_fast_route), patch(
-        "hermes_cli.model_switch.parse_model_flags",
-        side_effect=lambda raw: ((raw or "").strip(), "", False, False, False),
-    ), _patch_client_ctor(_recording_openai), patch(
+    with patch(
+        "hermes_cli.model_switch.switch_model", side_effect=_fast_route
+    ), _patch_model_flag_parser(), _patch_client_ctor(_recording_openai), patch(
         "socket.socket.connect", side_effect=AssertionError("network forbidden in test")
     ), patch.object(
         run_agent.AIAgent, "_build_system_prompt", return_value="You are a test agent"

@@ -22,6 +22,46 @@ from __future__ import annotations
 from typing import Any
 
 
+def _parse_model_input(model_switch, raw_model: str) -> tuple[str, str]:
+    """Extract ``(model_input, inline --provider value)`` from the host parser.
+
+    Host drift: newer hermes-agent removed the legacy 5-tuple wrapper
+    ``parse_model_flags`` (upstream commit 71fe5fcc, "remove parse_model_flags,
+    which only tests called") and kept the structured
+    ``parse_model_flags_detailed`` it delegated to. Older hosts only expose the
+    tuple form. Select by capability — never by host version string — and prefer
+    the structured result because it is the same parse the removed wrapper
+    performed.
+
+    An invocation failure of a *selected* parser propagates: silently trying the
+    other parser could turn a host bug into a wrong-but-plausible route. The
+    structured result's fields are read directly (as the removed upstream wrapper
+    did), so a malformed result fails loudly instead of degrading into an
+    inherited route.
+    """
+    detailed: Any = getattr(model_switch, "parse_model_flags_detailed", None)
+    if callable(detailed):
+        parsed: Any = detailed(raw_model)
+        return (parsed.model_input, parsed.explicit_provider)
+
+    legacy: Any = getattr(model_switch, "parse_model_flags", None)
+    if callable(legacy):
+        # Legacy tuple ``(model, provider, *flags)``. The flag tail has grown
+        # across host versions (4-tuple in PR #36790, 5-tuple later), so read
+        # only the first two positionally to stay arity-agnostic.
+        parsed = legacy(raw_model)
+        parsed_model = parsed[0] if len(parsed) > 0 else ""
+        parsed_provider = parsed[1] if len(parsed) > 1 else ""
+        return (parsed_model, parsed_provider)
+
+    raise ValueError(
+        "Cannot parse the model/provider override: this hermes-agent version "
+        "exposes neither hermes_cli.model_switch.parse_model_flags_detailed nor "
+        "parse_model_flags, so /model flag syntax cannot be read "
+        "(see docs/DESIGN.md §10)."
+    )
+
+
 def resolve_model_provider_override(
     *,
     model_input: str | None,
@@ -38,18 +78,14 @@ def resolve_model_provider_override(
         raise ValueError("model/provider override is empty")
 
     try:
-        from hermes_cli.model_switch import parse_model_flags, switch_model
+        from hermes_cli import model_switch
+        switch_model = model_switch.switch_model
     except Exception as exc:  # pragma: no cover - defensive import guard
         raise ValueError(
             f"Cannot import model switch resolver for delegation override: {exc}"
         ) from exc
 
-    # parse_model_flags returns (model, provider, *flags). The flag tail has
-    # grown across host versions (4-tuple in PR #36790, 5-tuple today), so read
-    # only the first two positionally to stay arity-agnostic.
-    parsed = parse_model_flags(raw_model)
-    parsed_model = parsed[0] if len(parsed) > 0 else ""
-    parsed_provider = parsed[1] if len(parsed) > 1 else ""
+    parsed_model, parsed_provider = _parse_model_input(model_switch, raw_model)
     if explicit_provider and parsed_provider and explicit_provider != parsed_provider:
         raise ValueError(
             f"Conflicting provider overrides: provider={explicit_provider!r} "

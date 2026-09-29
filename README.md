@@ -158,6 +158,7 @@ Verified against upstream [`NousResearch/hermes-agent`](https://github.com/NousR
 
 | hermes-agent | Status |
 |---|---|
+| `99721dca` (canary build, tested 2026-09-30) | ✅ verified — `/model` flag parsing through the structured `parse_model_flags_detailed` (upstream `71fe5fcc` removed the legacy `parse_model_flags` tuple wrapper). Resolver, routing seams, Tier-1 SDK-boundary model/provider/reasoning, mixed Fast ON/OFF/omitted, and baseline preflight all pass against the installed host. Scope: no real inference — the OpenAI client and `switch_model` are replaced by recording fakes, so this covers the request boundary, not live providers. |
 | `0.21.0` (checkout `63279301`, tested 2026-09-07) | ✅ verified — current schema/signatures, request-boundary routing, main-profile natural-language delegation, and async actual-model display E2E |
 | `0.21.0` (checkout `693641aa`, tested 2026-09-07) | ✅ verified — routing seams unchanged; async display follows the formatter move to `process_registry_notifications` (live `Model: per-task` mapping confirmed) |
 | `0.19.0` (tag [`v2026.7.20`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20)) | ✅ verified — routing/signature/schema/reasoning compatibility; async display fix degrades safely if host formatter differs |
