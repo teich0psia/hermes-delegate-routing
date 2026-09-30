@@ -33,7 +33,7 @@ Restore explicit per-task model/provider delegation on the current installed Her
 
 ## Status
 
-Source implementation accepted after Main's review and independent verification on `fix/model-parser-compat`. The repaired source commit `ca311e786ef3251953fb00b35f424f08b59c86e7` is installed in the default profile's managed plugin runtime. No service restart or explicit plugin reload was performed; the user owns restart.
+Source implementation accepted after Main's review and independent verification on `fix/model-parser-compat`. The repaired source commit `ca311e786ef3251953fb00b35f424f08b59c86e7` is installed in the default profile's managed plugin runtime. The user subsequently updated Hermes and restarted the gateway; a real explicitly routed Sol child completed successfully. With separate user authorization, Main restarted the two stale web backends and verified both readiness and removal of restart warnings.
 
 ### Main verification
 
@@ -55,6 +55,17 @@ Source implementation accepted after Main's review and independent verification 
 - Plugin doctor: runtime discovery, manifest parsing, import and registration passed. Managed dependency check: 140 installed packages compatible.
 - Gateway service PID/start time unchanged: 1040335 / 2026-09-30 03:50:59 JST. No stop/restart/reload command was issued. Pre-existing serve/dashboard manual-restart warnings are still present.
 
+### Post-restart live verification
+
+- User-updated host: `v0.21.5+4775.g3ebbaf5`, source commit `3ebbaf524344f93943169e63854cb952541563f9`. Plugin doctor remains successful and installed source remains `ca311e78`.
+- A real `delegate_task` call from the Discord gateway completed with `DELEGATE_SOL_OK`. Session DB records confirm model `gpt-6.1-sol`, billing provider `openai-codex`, and one API call. This verifies explicit route resolution, child startup, provider inference and result delivery on the updated host, not merely import or mocked SDK boundaries.
+- Astra plus Sol in a two-child batch and live per-task Fast were not exercised after this update. Earlier SDK-boundary Fast coverage remains separate evidence.
+- With explicit user authorization, Main restarted only `hermes-desktop-http.service` and the manually launched loopback dashboard. Their old processes were actually serving `0.21.5+2164`; this was not just a stale reminder.
+- Preserved bindings: Desktop HTTP `192.168.1.139:18642`, dashboard `127.0.0.1:53367`. Both now return HTTP 200 with `ok: true` and `displayVersion: 0.21.5+4775` from `/api/health`; authentication requirements remain true/false respectively.
+- Desktop HTTP new PID: 1546396. Dashboard is relaunched with the original host/port/no-open/skip-build arguments as a persistent background process; no new permanent service or config change was introduced.
+- The old PIDs 1388089 and 1388093 are gone. Fresh `hermes plugins list --user --json` emits no manual-restart warnings; the reminder reconciles through the normal CLI startup, not manual deletion.
+- Discord gateway remains PID 1534971, started 2026-09-30 09:11:55 JST; Main did not restart it.
+
 ### Handoff
 
-Installation is complete; live process adoption and real-provider delegation remain unverified. The user will restart Hermes. After the user confirms restart, verify fresh host/plugin load and replay explicit per-task model/provider delegation with one minimal real-provider child. Remote push/PR and release remain separately authorized actions.
+Implementation, installation and updated-gateway single-child live verification are complete. Web-backend restart obligations are resolved. The user authorized pushing the existing repair branch; no PR, main-branch merge, tag or release is included. The installed immutable source ref remains `ca311e7`; subsequent commits only record verification. Optional follow-up coverage is the original two-child Sol/Astra batch and live Fast behavior.
