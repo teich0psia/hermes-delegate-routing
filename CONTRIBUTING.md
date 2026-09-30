@@ -51,15 +51,19 @@ still works.
 
 ## Releasing
 
-Publishing is automated via PyPI Trusted Publishing (OIDC) — no API token is
-stored. To cut a release:
+This fork distributes GitHub Releases with attached wheel and sdist artifacts.
+The PyPI name belongs to the original upstream project; this fork does not publish
+there. To cut a release:
 
-1. Bump the version in `pyproject.toml` and `hermes_delegate_routing/__init__.py`,
-   and add a dated `CHANGELOG.md` entry.
-2. Commit, then tag: `git tag vX.Y.Z && git push origin main --tags`.
-3. The `release` workflow builds, runs `twine check`, and publishes to PyPI.
+1. Bump the version in `pyproject.toml`, `hermes_delegate_routing/__init__.py`,
+   `plugin.yaml`, and the bundled skill frontmatter; date the `CHANGELOG.md` entry.
+2. Run the relevant tests, build with `uv build`, and validate both artifacts with
+   `twine check`. Verify bundled skill files and version metadata in the artifacts.
+3. Commit and merge to `main`, then push the specific annotated tag:
+   `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`.
+4. Create a GitHub Release with `gh release create vX.Y.Z --verify-tag` and attach
+   the validated wheel and sdist. Read back the tag, release and uploaded assets.
 
-One-time PyPI setup (per project, before the first tag push): on
-<https://pypi.org/manage/account/publishing/> add a pending publisher —
-owner `b3nw`, repository `hermes-delegate-routing`, workflow `release.yml`,
-environment `pypi`.
+The `release` workflow builds and checks metadata on version-tag pushes; it does
+not publish to PyPI or create the GitHub Release. When Actions has no recorded
+run, report local build/test evidence separately rather than claiming remote CI.

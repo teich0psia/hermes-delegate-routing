@@ -69,3 +69,12 @@ Source implementation accepted after Main's review and independent verification 
 ### Handoff
 
 Implementation, installation and updated-gateway single-child live verification are complete. Web-backend restart obligations are resolved. With separate user authorization, the published repair branch was fast-forwarded into `main` and pushed to `teich0psia/hermes-delegate-routing`; remote readback matched local HEAD at `ee1e3e891f08c092b6c27cd4bc05fef8e11a505b` before this handoff-only update. No PR, tag or release was created, and the repair branch was retained. GitHub Actions/workflows are enabled, but the Actions API returned zero run records at verification time; no remote CI success is claimed. The local verification results and known pre-existing lint/type-command drift are documented above. The installed immutable source ref remains `ca311e7`; subsequent commits only record verification, with no reinstall or restart needed for this merge. Optional follow-up coverage is the original two-child Sol/Astra batch and live Fast behavior.
+
+### Release preparation: v0.3.3
+
+- User authorized merged-branch cleanup and GitHub release publication; no PyPI publishing or live reinstall/restart is included.
+- Version metadata is synchronized across pyproject, module, plugin manifest and bundled skill. The Unreleased changelog is dated 2026-09-30; release instructions now match the actual GitHub-only workflow.
+- Release checks: `130 passed, 3 skipped`; changed-file Ruff and explicit-package-bases Mypy passed. Wheel/sdist build and `twine check` passed; archive contents, bundled skill/reference, source equality and isolated wheel import verified.
+- Publication assets: `hermes_delegate_routing-0.3.3-py3-none-any.whl` (SHA256 `25ffcc2c826d4d06e19972036e0bb661637c138d97c93d4a670dd4db5cbd7c2f`) and `hermes_delegate_routing-0.3.3.tar.gz` (SHA256 `50c299566190f28dee1f03589294eeaa062ced5716236fa6526a5214018b6323`).
+- Cleanup discovery: the three origin topic branches are ancestors of main. Local `fix/async-display-new-location` is not an ancestry merge, but `git cherry -v main` marks its only divergent commit `bc7acea` as patch-equivalent to main; deleting it preserves all changes.
+- At this preparation stage, tag/release publication and branch deletion are not yet claimed; final completion must be verified against GitHub readback.
