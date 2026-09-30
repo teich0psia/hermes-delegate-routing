@@ -68,4 +68,4 @@ Source implementation accepted after Main's review and independent verification 
 
 ### Handoff
 
-Implementation, installation and updated-gateway single-child live verification are complete. Web-backend restart obligations are resolved. The user authorized pushing the existing repair branch; no PR, main-branch merge, tag or release is included. The installed immutable source ref remains `ca311e7`; subsequent commits only record verification. Optional follow-up coverage is the original two-child Sol/Astra batch and live Fast behavior.
+Implementation, installation and updated-gateway single-child live verification are complete. Web-backend restart obligations are resolved. The authorized repair branch `fix/model-parser-compat` has been pushed to `teich0psia/hermes-delegate-routing`; remote readback matched local HEAD. No PR, main-branch merge, tag or release was performed. The installed immutable source ref remains `ca311e7`; subsequent commits only record verification. Optional follow-up coverage is the original two-child Sol/Astra batch and live Fast behavior.
